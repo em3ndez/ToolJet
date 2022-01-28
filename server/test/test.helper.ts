@@ -1,7 +1,7 @@
 /* eslint-disable prefer-const */
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import { getConnection, Repository } from 'typeorm';
+import { getConnection, getManager, Repository } from 'typeorm';
 import { OrganizationUser } from 'src/entities/organization_user.entity';
 import { Organization } from 'src/entities/organization.entity';
 import { User } from 'src/entities/user.entity';
@@ -23,9 +23,8 @@ import { Logger } from 'nestjs-pino';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { AppsModule } from 'src/modules/apps/apps.module';
 import { LibraryAppCreationService } from '@services/library_app_creation.service';
-import { createMock, DeepMocked } from '@golevelup/ts-jest';
 
-export async function createNestAppInstance(): Promise<INestApplication> {
+export async function createNestAppInstance() {
   let app: INestApplication;
 
   const moduleRef = await Test.createTestingModule({
@@ -40,31 +39,6 @@ export async function createNestAppInstance(): Promise<INestApplication> {
   await app.init();
 
   return app;
-}
-
-export async function createNestAppInstanceWithEnvMock(): Promise<{
-  app: INestApplication;
-  mockConfig: DeepMocked<ConfigService>;
-}> {
-  let app: INestApplication;
-
-  const moduleRef = await Test.createTestingModule({
-    imports: [AppModule],
-    providers: [
-      {
-        provide: ConfigService,
-        useValue: createMock<ConfigService>(),
-      },
-    ],
-  }).compile();
-
-  app = moduleRef.createNestApplication();
-  app.setGlobalPrefix('api');
-  app.useGlobalFilters(new AllExceptionsFilter(moduleRef.get(Logger)));
-  app.useWebSocketAdapter(new WsAdapter(app));
-  await app.init();
-
-  return { app, mockConfig: moduleRef.get(ConfigService) };
 }
 
 export function authHeaderForUser(user: any): string {
@@ -203,10 +177,17 @@ export async function createUserGroupPermissions(nestApp, user, groups) {
         },
       });
     } else {
-      groupPermission = groupPermissionRepository.create({
-        organizationId: user.organizationId,
-        group: group,
-      });
+      groupPermission =
+        (await groupPermissionRepository.findOne({
+          where: {
+            organizationId: user.organizationId,
+            group: group,
+          },
+        })) ||
+        groupPermissionRepository.create({
+          organizationId: user.organizationId,
+          group: group,
+        });
       await groupPermissionRepository.save(groupPermission);
     }
 
@@ -299,25 +280,33 @@ export async function maybeCreateAllUsersAppGroupPermissions(nestApp, app) {
   const groupPermissionRepository: Repository<GroupPermission> = nestApp.get('GroupPermissionRepository');
   const appGroupPermissionRepository: Repository<AppGroupPermission> = nestApp.get('AppGroupPermissionRepository');
 
-  const orgGroupPermissions = await groupPermissionRepository.findOne({
+  const allUsersGroup = await groupPermissionRepository.findOne({
     organizationId: app.organizationId,
     group: 'all_users',
   });
 
-  if (orgGroupPermissions) {
+  if (allUsersGroup) {
     const permissions = {
-      read: true,
+      read: false,
       update: false,
       delete: false,
     };
 
     const appGroupPermission = appGroupPermissionRepository.create({
-      groupPermissionId: orgGroupPermissions.id,
+      groupPermissionId: allUsersGroup.id,
       appId: app.id,
       ...permissions,
     });
     await appGroupPermissionRepository.save(appGroupPermission);
   }
+}
+
+export async function addAppToGroupPermission(app: App, groupPermission: GroupPermission, permissions = {}) {
+  getManager().create(AppGroupPermission, {
+    groupPermissionId: groupPermission.id,
+    appId: app.id,
+    ...permissions,
+  });
 }
 
 export async function addAllUsersGroupToUser(nestApp, user) {
