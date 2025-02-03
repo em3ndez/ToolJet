@@ -1,6 +1,13 @@
 import { Knex, knex } from 'knex';
-import { cacheConnection, getCachedConnection, ConnectionTestResult, QueryService, QueryResult } from '@tooljet-plugins/common'
-import { SourceOptions, QueryOptions } from './types'
+import {
+  cacheConnection,
+  getCachedConnection,
+  ConnectionTestResult,
+  QueryService,
+  QueryResult,
+  QueryError,
+} from '@tooljet-plugins/common';
+import { SourceOptions, QueryOptions } from './types';
 
 export default class MysqlQueryService implements QueryService {
   private static _instance: MysqlQueryService;
@@ -39,6 +46,7 @@ export default class MysqlQueryService implements QueryService {
       result = await knexInstance.raw(query);
     } catch (err) {
       console.log(err);
+      throw new QueryError('Query could not be completed', err.message, {});
     }
 
     return {
@@ -49,8 +57,8 @@ export default class MysqlQueryService implements QueryService {
 
   async testConnection(sourceOptions: SourceOptions): Promise<ConnectionTestResult> {
     const knexInstance = await this.getConnection(sourceOptions, {}, false);
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const result = await knexInstance.raw('select @@version;');
+    await knexInstance.raw('select @@version;');
+    knexInstance.destroy();
 
     return {
       status: 'ok',
@@ -58,16 +66,23 @@ export default class MysqlQueryService implements QueryService {
   }
 
   async buildConnection(sourceOptions: SourceOptions) {
+    // either use socket_path or host/port + ssl
+    const props = sourceOptions.socket_path
+      ? { socketPath: sourceOptions.socket_path }
+      : {
+          host: sourceOptions.host,
+          port: +sourceOptions.port,
+          ssl: sourceOptions.ssl_enabled ?? false, // Disabling by default for backward compatibility
+        };
     const config: Knex.Config = {
-      client: 'mysql',
+      client: 'mysql2',
       connection: {
-        host: sourceOptions.host,
+        ...props,
         user: sourceOptions.username,
         password: sourceOptions.password,
         database: sourceOptions.database,
-        port: +sourceOptions.port,
         multipleStatements: true,
-        ssl: sourceOptions.ssl_enabled ?? false, // Disabling by default for backward compatibility
+        ...(sourceOptions.ssl_enabled && { ssl: { rejectUnauthorized: false } }),
       },
     };
 
@@ -104,10 +119,7 @@ export default class MysqlQueryService implements QueryService {
     const records = queryOptions['records'];
 
     for (const record of records) {
-      const primaryKeyValue =
-        typeof record[primaryKey] === "string"
-          ? `'${record[primaryKey]}'`
-          : record[primaryKey];
+      const primaryKeyValue = typeof record[primaryKey] === 'string' ? `'${record[primaryKey]}'` : record[primaryKey];
 
       queryText = `${queryText} UPDATE ${tableName} SET`;
 

@@ -5,6 +5,10 @@ export const ActionTypes = [
     options: [{ name: 'message', type: 'text', default: 'Message !' }],
   },
   {
+    name: 'Logout',
+    id: 'logout',
+  },
+  {
     name: 'Run Query',
     id: 'run-query',
     options: [{ queryId: '' }],
@@ -78,5 +82,34 @@ export const ActionTypes = [
     name: 'Unset variable',
     id: 'unset-custom-variable',
     options: [{ name: 'key', type: 'code', default: '' }],
+  },
+  {
+    name: 'Switch page',
+    id: 'switch-page',
+    options: [{ name: 'page', type: 'text', default: '' }],
+  },
+  {
+    name: 'Set page variable',
+    id: 'set-page-variable',
+    options: [
+      { name: 'key', type: 'code', default: '' },
+      { name: 'value', type: 'code', default: '' },
+    ],
+  },
+  {
+    name: 'Unset page variable',
+    id: 'unset-page-variable',
+    options: [
+      { name: 'key', type: 'code', default: '' },
+      { name: 'value', type: 'code', default: '' },
+    ],
+  },
+  {
+    name: 'Control component',
+    id: 'control-component',
+    options: [
+      { name: 'component', type: 'text', default: '' },
+      { name: 'action', type: 'text', default: '' },
+    ],
   },
 ];

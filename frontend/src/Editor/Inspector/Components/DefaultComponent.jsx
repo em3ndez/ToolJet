@@ -2,6 +2,30 @@ import React from 'react';
 import Accordion from '@/_ui/Accordion';
 import { EventManager } from '../EventManager';
 import { renderElement } from '../Utils';
+// eslint-disable-next-line import/no-unresolved
+import i18next from 'i18next';
+import { resolveReferences } from '@/_helpers/utils';
+// import { AllComponents } from '@/Editor/Box';
+import { AllComponents } from '@/_helpers/editorHelpers';
+
+const SHOW_ADDITIONAL_ACTIONS = [
+  'Text',
+  'TextInput',
+  'NumberInput',
+  'PasswordInput',
+  'Button',
+  'ToggleSwitchV2',
+  'Checkbox',
+];
+const PROPERTIES_VS_ACCORDION_TITLE = {
+  Text: 'Data',
+  TextInput: 'Data',
+  PasswordInput: 'Data',
+  NumberInput: 'Data',
+  ToggleSwitchV2: 'Data',
+  Checkbox: 'Data',
+  Button: 'Data',
+};
 
 export const DefaultComponent = ({ componentMeta, darkMode, ...restProps }) => {
   const {
@@ -12,12 +36,21 @@ export const DefaultComponent = ({ componentMeta, darkMode, ...restProps }) => {
     currentState,
     eventsChanged,
     apps,
-    allComponents,
+    components,
+    pages,
   } = restProps;
 
-  const properties = Object.keys(componentMeta.properties);
   const events = Object.keys(componentMeta.events);
   const validations = Object.keys(componentMeta.validation || {});
+  let properties = [];
+  let additionalActions = [];
+  for (const [key] of Object.entries(componentMeta?.properties)) {
+    if (componentMeta?.properties[key]?.section === 'additionalActions') {
+      additionalActions.push(key);
+    } else {
+      properties.push(key);
+    }
+  }
 
   const accordionItems = baseComponentProperties(
     properties,
@@ -30,9 +63,11 @@ export const DefaultComponent = ({ componentMeta, darkMode, ...restProps }) => {
     currentState,
     eventsChanged,
     apps,
-    allComponents,
+    components,
     validations,
-    darkMode
+    darkMode,
+    pages,
+    additionalActions
   );
 
   return <Accordion items={accordionItems} />;
@@ -51,48 +86,82 @@ export const baseComponentProperties = (
   apps,
   allComponents,
   validations,
-  darkMode
+  darkMode,
+  pages,
+  additionalActions
 ) => {
-  let items = [];
-  items.push({
-    title: 'Properties',
-    children: properties.map((property) =>
-      renderElement(
-        component,
-        componentMeta,
-        paramUpdated,
-        dataQueries,
-        property,
-        'properties',
-        currentState,
-        allComponents,
-        darkMode
-      )
+  // Add widget title to section key to filter that property section from specified widgets' settings
+  const accordionFilters = {
+    Properties: [],
+    Events: [],
+    Validation: [],
+    'Additional Actions': Object.keys(AllComponents).filter(
+      (component) => !SHOW_ADDITIONAL_ACTIONS.includes(component)
     ),
-  });
+    General: [
+      'Modal',
+      'TextInput',
+      'PasswordInput',
+      'NumberInput',
+      'Text',
+      'Table',
+      'Button',
+      'ToggleSwitchV2',
+      'Checkbox',
+    ],
+    Layout: [],
+  };
+  if (component.component.component === 'Listview') {
+    if (!resolveReferences(component.component.definition.properties?.enablePagination?.value)) {
+      properties = properties.filter((property) => property !== 'rowsPerPage');
+    }
+  }
+  let items = [];
+  if (properties.length > 0) {
+    items.push({
+      title:
+        PROPERTIES_VS_ACCORDION_TITLE[component?.component?.component] ??
+        `${i18next.t('widget.common.properties', 'Properties')}`,
+      children: properties.map((property) =>
+        renderElement(
+          component,
+          componentMeta,
+          paramUpdated,
+          dataQueries,
+          property,
+          'properties',
+          currentState,
+          allComponents,
+          darkMode
+        )
+      ),
+    });
+  }
 
   if (events.length > 0) {
     items.push({
-      title: 'Events',
-      isOpen: false,
+      title: `${i18next.t('widget.common.events', 'Events')}`,
+      isOpen: true,
       children: (
         <EventManager
-          component={component}
-          componentMeta={componentMeta}
+          sourceId={component?.id}
+          eventSourceType="component"
+          eventMetaDefinition={componentMeta}
           currentState={currentState}
           dataQueries={dataQueries}
           components={allComponents}
           eventsChanged={eventsChanged}
           apps={apps}
           darkMode={darkMode}
+          pages={pages}
+          component={component}
         />
       ),
     });
   }
-
   if (validations.length > 0) {
     items.push({
-      title: 'Validation',
+      title: `${i18next.t('widget.common.validation', 'Validation')}`,
       children: validations.map((property) =>
         renderElement(
           component,
@@ -103,15 +172,55 @@ export const baseComponentProperties = (
           'validation',
           currentState,
           allComponents,
-          darkMode
+          darkMode,
+          componentMeta.validation?.[property]?.placeholder
         )
       ),
     });
   }
 
   items.push({
-    title: 'Layout',
-    isOpen: false,
+    title: `${i18next.t('widget.common.general', 'General')}`,
+    isOpen: true,
+    children: (
+      <>
+        {renderElement(
+          component,
+          componentMeta,
+          layoutPropertyChanged,
+          dataQueries,
+          'tooltip',
+          'general',
+          currentState,
+          allComponents
+        )}
+      </>
+    ),
+  });
+
+  items.push({
+    title: `${i18next.t('widget.common.additionalActions', 'Additional Actions')}`,
+    isOpen: true,
+    children: additionalActions?.map((property) => {
+      const paramType = property === 'Tooltip' ? 'general' : 'properties';
+      return renderElement(
+        component,
+        componentMeta,
+        paramUpdated,
+        dataQueries,
+        property,
+        paramType,
+        currentState,
+        allComponents,
+        darkMode,
+        componentMeta.properties?.[property]?.placeholder
+      );
+    }),
+  });
+
+  items.push({
+    title: `${i18next.t('widget.common.devices', 'Devices')}`,
+    isOpen: true,
     children: (
       <>
         {renderElement(
@@ -138,5 +247,7 @@ export const baseComponentProperties = (
     ),
   });
 
-  return items;
+  return items.filter(
+    (item) => !(item.title in accordionFilters && accordionFilters[item.title].includes(componentMeta.component))
+  );
 };

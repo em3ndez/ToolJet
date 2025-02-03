@@ -1,18 +1,36 @@
 import React from 'react';
 import { render } from 'react-dom';
+
 import * as Sentry from '@sentry/react';
-import { Integrations } from '@sentry/tracing';
-import { createBrowserHistory } from 'history';
+import { useLocation, useNavigationType, createRoutesFromChildren, matchRoutes } from 'react-router-dom';
 import { appService } from '@/_services';
 import { App } from './App';
+// eslint-disable-next-line import/no-unresolved
+import i18n from 'i18next';
+import { initReactI18next } from 'react-i18next';
+import Backend from 'i18next-http-backend';
+
+const AppWithProfiler = Sentry.withProfiler(App);
 
 appService
   .getConfig()
   .then((config) => {
     window.public_config = config;
+    const language = config.LANGUAGE || 'en';
+    const path = config?.SUB_PATH || '/';
+    i18n
+      .use(Backend)
+      .use(initReactI18next)
+      .init({
+        load: 'languageOnly',
+        fallbackLng: 'en',
+        lng: language,
+        backend: {
+          loadPath: `${path}assets/translations/{{lng}}.json`,
+        },
+      });
 
     if (window.public_config.APM_VENDOR === 'sentry') {
-      const history = createBrowserHistory();
       const tooljetServerUrl = window.public_config.TOOLJET_SERVER_URL;
       const tracingOrigins = ['localhost', /^\//];
       const releaseVersion = window.public_config.RELEASE_VERSION
@@ -25,14 +43,22 @@ appService
         dsn: window.public_config.SENTRY_DNS,
         debug: !!window.public_config.SENTRY_DEBUG,
         release: releaseVersion,
+        name: 'react',
         integrations: [
-          new Integrations.BrowserTracing({
-            routingInstrumentation: Sentry.reactRouterV5Instrumentation(history),
-            tracingOrigins: tracingOrigins,
+          new Sentry.BrowserTracing({
+            routingInstrumentation: Sentry.reactRouterV6Instrumentation(
+              React.useEffect,
+              useLocation,
+              useNavigationType,
+              createRoutesFromChildren,
+              matchRoutes
+            ),
           }),
         ],
         tracesSampleRate: 0.5,
+        tracePropagationTargets: tracingOrigins,
       });
     }
   })
-  .then(() => render(<App></App>, document.getElementById('app')));
+  .then(() => render(<AppWithProfiler />, document.getElementById('app')));
+// .then(() => createRoot(document.getElementById('app')).render(<AppWithProfiler />));

@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 
 export const RadioButton = function RadioButton({
@@ -7,11 +7,17 @@ export const RadioButton = function RadioButton({
   properties,
   styles,
   fireEvent,
-  exposedVariables,
   setExposedVariable,
+  setExposedVariables,
+  darkMode,
+  dataCy,
 }) {
   const { label, value, values, display_values } = properties;
-  const { visibility, disabledState, textColor, activeColor } = styles;
+  const { visibility, disabledState, activeColor, boxShadow } = styles;
+  const textColor = darkMode && styles.textColor === '#000' ? '#fff' : styles.textColor;
+  const [checkedValue, setValue] = useState(() => value);
+  useEffect(() => setValue(value), [value]);
+
   let selectOptions = [];
 
   try {
@@ -25,16 +31,29 @@ export const RadioButton = function RadioButton({
   }
 
   function onSelect(selection) {
-    setExposedVariable('value', selection).then(() => fireEvent('onSelectionChange'));
+    setValue(selection);
+    setExposedVariable('value', selection);
+    fireEvent('onSelectionChange');
   }
 
   useEffect(() => {
-    setExposedVariable('value', value);
+    const exposedVariables = {
+      value: value,
+      selectOption: async function (option) {
+        onSelect(option);
+      },
+    };
+    setExposedVariables(exposedVariables);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
+  }, [value, setValue]);
 
   return (
-    <div data-disabled={disabledState} className="row py-1" style={{ height, display: visibility ? '' : 'none' }}>
+    <div
+      data-disabled={disabledState}
+      className="row py-1"
+      style={{ height, display: visibility ? '' : 'none', boxShadow }}
+      data-cy={dataCy}
+    >
       <span className="form-check-label col-auto py-0" style={{ color: textColor }}>
         {label}
       </span>
@@ -44,10 +63,10 @@ export const RadioButton = function RadioButton({
             <input
               style={{
                 marginTop: '1px',
-                backgroundColor: exposedVariables?.value === option.value ? `${activeColor}` : 'white',
+                backgroundColor: checkedValue === option.value ? `${activeColor}` : 'white',
               }}
               className="form-check-input"
-              checked={exposedVariables?.value === option.value}
+              checked={checkedValue === option.value}
               type="radio"
               value={option.value}
               name={`${id}-${uuidv4()}`}

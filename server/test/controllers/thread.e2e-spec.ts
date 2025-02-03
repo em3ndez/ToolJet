@@ -1,13 +1,13 @@
 import * as request from 'supertest';
 import { INestApplication } from '@nestjs/common';
 import {
-  authHeaderForUser,
   clearDB,
   createApplication,
   createUser,
   createNestAppInstance,
   createThread,
   createApplicationVersion,
+  authenticateUser,
 } from '../test.helper';
 
 describe('thread controller', () => {
@@ -28,7 +28,6 @@ describe('thread controller', () => {
   it('should list all threads in an application', async () => {
     const userData = await createUser(app, {
       email: 'admin@tooljet.io',
-      role: 'admin',
     });
     const application = await createApplication(app, {
       name: 'App',
@@ -41,19 +40,23 @@ describe('thread controller', () => {
       x: 100,
       y: 200,
       userId: userData.user.id,
-      organizationId: user.organization.id,
+      organizationId: user.organizationId,
       appVersionsId: version.id,
     });
+
+    const loggedUser = await authenticateUser(app);
+    userData['tokenCookie'] = loggedUser.tokenCookie;
 
     const response = await request(app.getHttpServer())
       .get(`/api/threads/${application.id}/all`)
       .query({ appVersionsId: version.id })
-      .set('Authorization', authHeaderForUser(user));
+      .set('tj-workspace-id', user.defaultOrganizationId)
+      .set('Cookie', userData['tokenCookie']);
 
     expect(response.statusCode).toBe(200);
     expect(response.body).toHaveLength(1);
     expect(Object.keys(response.body[0]).sort()).toEqual(
-      ['id', 'x', 'y', 'appId', 'appVersionsId', 'userId', 'organizationId', 'isResolved', 'user'].sort()
+      ['id', 'x', 'y', 'appId', 'appVersionsId', 'userId', 'organizationId', 'isResolved', 'user', 'pageId'].sort()
     );
   });
 

@@ -1,9 +1,12 @@
 import React, { useState } from 'react';
-import SelectSearch, { fuzzySearch } from 'react-select-search';
+import SelectSearch from 'react-select-search';
 import Collapse from 'react-bootstrap/Collapse';
+// eslint-disable-next-line import/no-unresolved
+import { useTranslation } from 'react-i18next';
 
 export const QuerySelector = ({ param, definition, eventOptionUpdated, dataQueries, extraData, eventMeta }) => {
   const [open, setOpen] = useState(false);
+  const { t } = useTranslation();
 
   function onChange(value) {
     const query = dataQueries.find((dataquery) => dataquery.id === value);
@@ -41,8 +44,8 @@ export const QuerySelector = ({ param, definition, eventOptionUpdated, dataQueri
               onChange={(value) => {
                 onChange(value);
               }}
-              filterOptions={fuzzySearch}
-              placeholder="Select.."
+              fuzzySearch
+              placeholder={t('globals.select', 'Select') + '...'}
             />
           </div>
         </div>

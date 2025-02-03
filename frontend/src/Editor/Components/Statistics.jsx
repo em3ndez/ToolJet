@@ -1,8 +1,17 @@
+import WidgetIcon from '@/../assets/images/icons/widgets';
 import React from 'react';
-export const Statistics = function Statistics({ height, properties, styles, darkMode }) {
-  const { primaryValueLabel, primaryValue, secondaryValueLabel, secondaryValue, secondarySignDisplay, hideSecondary } =
-    properties;
-  const { primaryLabelColour, primaryTextColour, secondaryLabelColour, secondaryTextColour, visibility } = styles;
+export const Statistics = function Statistics({ width, height, properties, styles, darkMode, dataCy }) {
+  const {
+    primaryValueLabel,
+    primaryValue,
+    secondaryValueLabel,
+    secondaryValue,
+    secondarySignDisplay,
+    hideSecondary,
+    loadingState,
+  } = properties;
+  const { primaryLabelColour, primaryTextColour, secondaryLabelColour, secondaryTextColour, visibility, boxShadow } =
+    styles;
 
   const baseStyle = {
     borderRadius: 4,
@@ -18,6 +27,7 @@ export const Statistics = function Statistics({ height, properties, styles, dark
     textAlign: 'center',
     overflow: 'hidden',
     height,
+    boxShadow,
   };
 
   const letterStyle = {
@@ -63,46 +73,54 @@ export const Statistics = function Statistics({ height, properties, styles, dark
   };
 
   return (
-    <div style={baseStyle}>
-      <p
-        style={{
-          ...letterStyle,
-          ...marginStyle,
-          color: primaryLabelColour !== '#8092AB' ? primaryLabelColour : darkMode && '#FFFFFC',
-        }}
-      >
-        {primaryValueLabel}
-      </p>
-      <h2 style={primaryStyle}>{primaryValue}</h2>
-      {hideSecondary ? (
-        ''
+    <div style={baseStyle} data-cy={dataCy}>
+      {loadingState === true ? (
+        <div style={{ width }} className="p-2">
+          <center>
+            <div className="spinner-border" role="status"></div>
+          </center>
+        </div>
       ) : (
-        <div>
-          <div className="d-flex flex-row justify-content-center align-items-baseline">
-            {secondarySignDisplay !== 'negative' ? (
-              <img
-                src="/assets/images/icons/widgets/upstatistics.svg"
-                style={{ ...marginStyle, marginRight: '6.5px' }}
-              />
-            ) : (
-              <img
-                src="/assets/images/icons/widgets/downstatistics.svg"
-                style={{ ...marginStyle, marginRight: '6.5px' }}
-              />
-            )}
-            <p style={{ ...secondaryContainerStyle }}>{secondaryValue}</p>
-          </div>
+        <>
           <p
             style={{
               ...letterStyle,
-              color: secondaryLabelColour !== '#8092AB' ? secondaryLabelColour : darkMode && '#FFFFFC',
-              padding: '6px 20px 12px 20px ',
-              marginBottom: '0px',
+              ...marginStyle,
+              color: primaryLabelColour !== '#8092AB' ? primaryLabelColour : darkMode && '#FFFFFC',
             }}
           >
-            {secondaryValueLabel}
+            {primaryValueLabel}
           </p>
-        </div>
+          <h2 style={primaryStyle}>{primaryValue}</h2>
+          {hideSecondary ? (
+            ''
+          ) : (
+            <div>
+              <div className="d-flex flex-row justify-content-center align-items-baseline">
+                {secondarySignDisplay !== 'negative' ? (
+                  <span style={{ ...marginStyle, marginRight: '6.5px' }}>
+                    <WidgetIcon name={'upstatistics'} />
+                  </span>
+                ) : (
+                  <span style={{ ...marginStyle, marginRight: '6.5px' }}>
+                    <WidgetIcon name={'downstatistics'} />
+                  </span>
+                )}
+                <p style={{ ...secondaryContainerStyle }}>{secondaryValue}</p>
+              </div>
+              <p
+                style={{
+                  ...letterStyle,
+                  color: secondaryLabelColour !== '#8092AB' ? secondaryLabelColour : darkMode && '#FFFFFC',
+                  padding: '6px 20px 12px 20px ',
+                  marginBottom: '0px',
+                }}
+              >
+                {secondaryValueLabel}
+              </p>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

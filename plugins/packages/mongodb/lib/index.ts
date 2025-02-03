@@ -1,8 +1,8 @@
-import { QueryResult, QueryService, QueryError, ConnectionTestResult } from '@tooljet-plugins/common'
+import { QueryResult, QueryService, QueryError, ConnectionTestResult } from '@tooljet-plugins/common';
 const { MongoClient } = require('mongodb');
 const JSON5 = require('json5');
 import { EJSON } from 'bson';
-import { SourceOptions, QueryOptions } from './types'
+import { SourceOptions, QueryOptions } from './types';
 
 export default class MongodbService implements QueryService {
   async run(sourceOptions: SourceOptions, queryOptions: QueryOptions, dataSourceId: string): Promise<QueryResult> {
@@ -163,8 +163,8 @@ export default class MongodbService implements QueryService {
       const database = sourceOptions.database;
       const host = sourceOptions.host;
       const port = sourceOptions.port;
-      const username = sourceOptions.username;
-      const password = sourceOptions.password;
+      const username = encodeURIComponent(sourceOptions.username);
+      const password = encodeURIComponent(sourceOptions.password);
 
       const needsAuthentication = username !== '' && password !== '';
       const uri = needsAuthentication
@@ -179,7 +179,14 @@ export default class MongodbService implements QueryService {
       db = client.db(database);
     } else {
       const connectionString = sourceOptions['connection_string'];
-      client = new MongoClient(connectionString, { useNewUrlParser: true, useUnifiedTopology: true });
+
+      const password = connectionString.match(/(?<=:\/\/)(.*):(.*)@/)[2];
+
+      const encodedPassword = encodeURIComponent(password);
+
+      const encodedConnectionString = connectionString.replace(password, encodedPassword);
+
+      client = new MongoClient(encodedConnectionString, { useNewUrlParser: true, useUnifiedTopology: true });
       await client.connect();
       db = client.db();
     }

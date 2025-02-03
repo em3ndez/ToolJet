@@ -1,13 +1,23 @@
 import React, { useEffect, useState } from 'react';
 import useRouter from '@/_hooks/use-router';
-import { authenticationService } from '@/_services';
-import { Redirect } from 'react-router-dom';
+import { appService, authenticationService } from '@/_services';
+import { Navigate } from 'react-router-dom';
 import Configs from './Configs/Config.json';
+import { RedirectLoader } from '../_components';
+import { getCookie } from '@/_helpers';
+import { onInvitedUserSignUpSuccess, onLoginSuccess } from '@/_helpers/platform/utils/auth.utils';
+import { updateCurrentSession } from '@/_helpers/authorizeWorkspace';
 
-export function Authorize() {
+export function Authorize({ navigate }) {
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState(false);
+  const [inviteeEmail, setInviteeEmail] = useState();
   const router = useRouter();
+
+  const organizationId = authenticationService.getLoginOrganizationId();
+  const organizationSlug = authenticationService.getLoginOrganizationSlug();
+  const redirectUrl = getCookie('redirectPath');
+  const signupOrganizationSlug = authenticationService.getSignupOrganizationSlug();
+  const inviteFlowIdentifier = authenticationService.getInviteFlowIndetifier();
 
   useEffect(() => {
     const errorMessage = router.query.error_description || router.query.error;
@@ -21,63 +31,94 @@ export function Authorize() {
     }
 
     const configs = Configs[router.query.origin];
+    const authParams = {};
 
-    authenticationService
-      .signInViaOAuth({
-        token: router.query[configs.params.token],
-        origin: router.query.origin,
-        state: router.query[configs.params.state],
-      })
-      .then(() => setSuccess(true))
-      .catch(() => setError(`${configs.name} login failed`));
+    if (configs.responseType === 'hash') {
+      if (!window.location.hash) {
+        return setError('Login failed');
+      }
+      const params = new Proxy(new URLSearchParams(window.location.hash.substr(1)), {
+        get: (searchParams, prop) => searchParams.get(prop),
+      });
+      authParams.token = params[configs.params.token];
+      authParams.state = params[configs.params.state];
+    } else {
+      authParams.token = router.query[configs.params.token];
+      authParams.state = router.query[configs.params.state];
+    }
+
+    let subsciption;
+    if (organizationId) {
+      subsciption = authenticationService.currentSession.subscribe((session) => {
+        //logged users should send tj-workspace-id when login to unauthorized workspace
+        if (session.authentication_status === false || session.current_organization_id) {
+          signIn(authParams, configs);
+          subsciption.unsubscribe();
+        }
+      });
+    } else {
+      signIn(authParams, configs);
+    }
+
     // Disabled for useEffect not being called for updation
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const signIn = (authParams, configs) => {
+    authenticationService
+      .signInViaOAuth(router.query.configId, router.query.origin, authParams)
+      .then(({ redirect_url, ...restResponse }) => {
+        if (redirect_url) {
+          window.location.href = redirect_url;
+          return;
+        }
+        if (restResponse?.organizationInviteUrl) onInvitedUserSignUpSuccess(restResponse, navigate);
+        else {
+          updateCurrentSession({
+            isUserLoggingIn: true,
+          });
+          onLoginSuccess(restResponse, navigate);
+        }
+      })
+      .catch((err) => {
+        const details = err?.data?.message;
+        const inviteeEmail = details?.inviteeEmail;
+        if (inviteeEmail) setInviteeEmail(inviteeEmail);
+        const errMessage = details?.message || err?.error || 'something went wrong';
+        if (!inviteeEmail && inviteFlowIdentifier) {
+          /* Some unexpected error happened from the provider side. Need to retreive email to continue */
+          appService
+            .getInviteeDetails(inviteFlowIdentifier)
+            .then((response) => {
+              setInviteeEmail(response.email);
+            })
+            .catch(() => {
+              console.error('Error while fetching invitee details');
+            })
+            .finally(() => {
+              setError(`${configs.name} login failed - ${errMessage}`);
+            });
+        } else {
+          setError(`${configs.name} login failed - ${errMessage}`);
+        }
+      });
+  };
+
+  const baseRoute = signupOrganizationSlug ? '/signup' : '/login';
+  const slug = signupOrganizationSlug ? signupOrganizationSlug : organizationSlug;
+  const errorURL = `${baseRoute}${error && slug ? `/${slug}` : '/'}${
+    !signupOrganizationSlug && redirectUrl ? `?redirectTo=${redirectUrl}` : ''
+  }`;
   return (
-    <div className="container-tight auth-main px-lg-4">
-      <div className="horizontal-line"></div>
-      <div className="row">
-        <div className="col-4 sso-ico d-flex">
-          <div>
-            <img
-              src={`/assets/images/sso-buttons/${Configs[router.query.origin] ? router.query.origin : 'unknown'}.svg`}
-            />
-          </div>
-        </div>
-        <div className="col-4 text-center">
-          <svg className="button" expanded="true">
-            <circle cx="50%" cy="50%" r="35%" stroke="#8f8f8f" strokeWidth="10%" fill="#ffffff" />
-            <circle className="innerCircle" cx="50%" cy="50%" r="25%" fill="#8f8f8f">
-              <animate attributeName="r" begin="0s" dur="1s" repeatCount="indefinite" from="5%" to="25%" />
-            </circle>
-          </svg>
-        </div>
-        <div className="col-4 text-right">
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            className="icon"
-            width="24"
-            height="24"
-            viewBox="0 0 24 24"
-            strokeWidth="2"
-            stroke="currentColor"
-            fill="none"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path stroke="none" d="M0 0h24v24H0z" fill="#ffffff" />
-            <path d="M12 3a12 12 0 0 0 8.5 3a12 12 0 0 1 -8.5 15a12 12 0 0 1 -8.5 -15a12 12 0 0 0 8.5 -3" />
-            <circle cx="12" cy="11" r="1" />
-            <line x1="12" y1="12" x2="12" y2="14.5" />
-          </svg>
-        </div>
-      </div>
-      {(success || error) && (
-        <Redirect
-          to={{
-            pathname: '/login',
-            state: { errorMessage: success ? '' : error },
+    <div>
+      <RedirectLoader origin={Configs[router.query.origin] ? router.query.origin : 'unknown'} />
+      {error && (
+        <Navigate
+          replace
+          to={errorURL}
+          state={{
+            errorMessage: error && error,
+            ...(inviteFlowIdentifier ? { organizationToken: inviteFlowIdentifier, inviteeEmail } : {}),
           }}
         />
       )}

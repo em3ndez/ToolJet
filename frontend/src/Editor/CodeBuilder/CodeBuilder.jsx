@@ -1,17 +1,21 @@
 import React, { useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import 'codemirror/theme/duotone-light.css';
-import { componentTypes } from '../Components/components';
+import { componentTypes } from '../WidgetManager/components';
 import { DataSourceTypes } from '../DataSourceManager/SourceComponents';
 import { debounce } from 'lodash';
 import Fuse from 'fuse.js';
+import { useTranslation } from 'react-i18next';
 
-export function CodeBuilder({ initialValue, onChange, components, dataQueries }) {
+import { useDataQueries } from '@/_stores/dataQueriesStore';
+
+export function CodeBuilder({ initialValue, onChange, components }) {
+  const dataQueries = useDataQueries();
   const [showDropdown, setShowDropdown] = useState(false);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [currentValue, setCurrentValue] = useState(initialValue);
   const [codeMirrorInstance, setCodeMirrorInstance] = useState(null);
   const [currentWord, setCurrentWord] = useState('');
+  const { t } = useTranslation();
 
   function computeCurrentWord(value, _cursorPosition) {
     const sliced = value
@@ -91,7 +95,6 @@ export function CodeBuilder({ initialValue, onChange, components, dataQueries })
         return { item: item };
       });
     } else {
-      console.log(currentWord);
       filteredVariables = fuse.search(currentWord);
     }
     return filteredVariables.map((variable) => renderVariable(type, key, variable.item.name));
@@ -106,7 +109,12 @@ export function CodeBuilder({ initialValue, onChange, components, dataQueries })
   }
 
   function renderQueryVariables(query) {
-    const dataSourceMeta = DataSourceTypes.find((source) => query.kind === source.kind);
+    let dataSourceMeta;
+    if (query?.pluginId) {
+      dataSourceMeta = query.manifestFile.data.source;
+    } else {
+      dataSourceMeta = DataSourceTypes.find((source) => query.kind === source.kind);
+    }
     const exposedVariables = dataSourceMeta.exposedVariables;
 
     return renderVariables('queries', query.name, Object.keys(exposedVariables));
@@ -134,7 +142,7 @@ export function CodeBuilder({ initialValue, onChange, components, dataQueries })
       {showDropdown && (
         <div className="variables-dropdown">
           <div className="card">
-            <div className="group-header p-2">components</div>
+            <div className="group-header p-2">{t('globals.components', 'components')}</div>
             <div className="group-body p-2">
               {Object.keys(components).map((component) => renderComponentVariables(components[component]))}
             </div>

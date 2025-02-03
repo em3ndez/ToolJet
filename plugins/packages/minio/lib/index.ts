@@ -1,7 +1,15 @@
-import { QueryError, QueryResult,  QueryService, ConnectionTestResult } from '@tooljet-plugins/common'
+import { QueryError, QueryResult, QueryService, ConnectionTestResult } from '@tooljet-plugins/common';
 import { Client as MinioClient, ClientOptions } from 'minio';
-import { getObject, uploadObject, listBuckets, listObjects, signedUrlForGet, signedUrlForPut } from './operations';
-import { SourceOptions, QueryOptions } from './types'
+import {
+  getObject,
+  uploadObject,
+  listBuckets,
+  listObjects,
+  signedUrlForGet,
+  signedUrlForPut,
+  removeObject,
+} from './operations';
+import { SourceOptions, QueryOptions } from './types';
 
 export default class MinioService implements QueryService {
   async run(sourceOptions: SourceOptions, queryOptions: QueryOptions, _dataSourceId: string): Promise<QueryResult> {
@@ -29,6 +37,9 @@ export default class MinioService implements QueryService {
         case 'signed_url_for_put':
           result = await signedUrlForPut(minioClient, queryOptions);
           break;
+        case 'remove_object':
+          result = await removeObject(minioClient, queryOptions);
+          break;
       }
     } catch (error) {
       throw new QueryError('Query could not be completed', error.message, {});
@@ -50,8 +61,8 @@ export default class MinioService implements QueryService {
   async getConnection(sourceOptions: SourceOptions, options?: object): Promise<any> {
     const credentials: ClientOptions = {
       endPoint: sourceOptions['host'],
-      port: sourceOptions['port'],
-      useSSL: sourceOptions['ssl_enabled'],
+      port: +sourceOptions['port'],
+      useSSL: !!sourceOptions['ssl_enabled'],
       accessKey: sourceOptions['access_key'],
       secretKey: sourceOptions['secret_key'],
     };

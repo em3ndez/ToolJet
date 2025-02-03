@@ -1,32 +1,52 @@
 import React from 'react';
 import { authenticationService, organizationService, organizationUserService } from '@/_services';
-import { Header } from '@/_components';
 import { toast } from 'react-hot-toast';
-import { history } from '@/_helpers';
-import { CopyToClipboard } from 'react-copy-to-clipboard';
-import ReactTooltip from 'react-tooltip';
+// eslint-disable-next-line import/no-unresolved
+import { withTranslation } from 'react-i18next';
+import urlJoin from 'url-join';
+import ErrorBoundary from '@/Editor/ErrorBoundary';
+import UsersTable from '../../ee/components/UsersPage/UsersTable';
+import UsersFilter from '../../ee/components/UsersPage/UsersFilter';
+import { ButtonSolid } from '@/_ui/AppButton/AppButton';
+import ManageOrgUsersDrawer from './ManageOrgUsersDrawer';
+import { USER_DRAWER_MODES } from '@/_helpers/utils';
+import { getQueryParams } from '@/_helpers/routes';
 
-class ManageOrgUsers extends React.Component {
+class ManageOrgUsersComponent extends React.Component {
   constructor(props) {
     super(props);
 
     this.state = {
-      currentUser: authenticationService.currentUserValue,
       isLoading: true,
-      showNewUserForm: false,
       creatingUser: false,
+      uploadingUsers: false,
       newUser: {},
       archivingUser: null,
       unarchivingUser: null,
       fields: {},
       errors: {},
+      meta: {
+        total_count: 0,
+      },
+      currentPage: 1,
+      options: {},
+      file: null,
+      isInviteUsersDrawerOpen: false,
+      currentEditingUser: null,
+      userDrawerMode: USER_DRAWER_MODES.CREATE,
+      newSelectedGroups: [],
+      existingGroupsToRemove: [],
     };
-
-    this.tableRef = React.createRef(null);
   }
 
+  setQueryParameter = () => {
+    const showAdduserDrawer = getQueryParams('adduser');
+    this.setState({
+      isInviteUsersDrawerOpen: showAdduserDrawer ? showAdduserDrawer : false,
+    });
+  };
+
   validateEmail(email) {
-    console.log(email);
     const re =
       /^(([^<>()[\]\\.,;:\s@"]+(\.[^<>()[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/;
     return re.test(String(email).toLowerCase());
@@ -35,22 +55,9 @@ class ManageOrgUsers extends React.Component {
   handleValidation() {
     let fields = this.state.fields;
     let errors = {};
-    //Name
-    if (!fields['firstName']) {
-      errors['firstName'] = 'This field is required';
-    } else if (typeof fields['firstName'] !== 'undefined') {
-      if (!/^[a-zA-Z]+$/.test(fields['firstName'])) {
-        errors['firstName'] = 'Only letters are allowed';
-      }
+    if (!fields['fullName']) {
+      errors['fullName'] = 'This field is required';
     }
-    if (!fields['lastName']) {
-      errors['lastName'] = 'This field is required';
-    } else if (typeof fields['lastName'] !== 'undefined') {
-      if (!/^[a-zA-Z]+$/.test(fields['lastName'])) {
-        errors['lastName'] = 'Only letters are allowed';
-      }
-    }
-    //Email
     if (!fields['email']) {
       errors['email'] = 'This field is required';
     } else if (!this.validateEmail(fields['email'])) {
@@ -61,26 +68,30 @@ class ManageOrgUsers extends React.Component {
     return Object.keys(errors).length === 0;
   }
 
-  componentDidMount() {
-    this.fetchUsers();
+  handleFileValidation() {
+    let errors = {};
+    if (!this.state.file) {
+      errors['file'] = 'This field is required';
+    }
+
+    this.setState({ errors: errors });
+    return Object.keys(errors).length === 0;
   }
 
-  calculateOffset() {
-    const elementHeight = this.tableRef.current.getBoundingClientRect().top;
-    return window.innerHeight - elementHeight;
-  }
-
-  fetchUsers = () => {
+  fetchUsers = (page = 1, options = {}) => {
     this.setState({
+      options,
       isLoading: true,
+      currentPage: page,
     });
 
-    organizationService.getUsers(null).then((data) =>
+    organizationService.getUsers(page, options).then((data) => {
       this.setState({
         users: data.users,
+        meta: data.meta,
         isLoading: false,
-      })
-    );
+      });
+    });
   };
 
   changeNewUserOption = (name, e) => {
@@ -98,14 +109,12 @@ class ManageOrgUsers extends React.Component {
     organizationUserService
       .archive(id)
       .then(() => {
-        toast.success('The user has been archived', {
-          position: 'top-center',
-        });
+        toast.success('The user has been archived');
         this.setState({ archivingUser: null });
-        this.fetchUsers();
+        this.fetchUsers(this.state.currentPage, this.state.options);
       })
       .catch(({ error }) => {
-        toast.error(error, { position: 'top-center' });
+        toast.error(error);
         this.setState({ archivingUser: null });
       });
   };
@@ -116,22 +125,67 @@ class ManageOrgUsers extends React.Component {
     organizationUserService
       .unarchive(id)
       .then(() => {
-        toast.success('The user has been unarchived', {
-          position: 'top-center',
-        });
+        toast.success('The user has been unarchived');
         this.setState({ unarchivingUser: null });
-        this.fetchUsers();
+        this.fetchUsers(this.state.currentPage, this.state.options);
       })
       .catch(({ error }) => {
-        toast.error(error, { position: 'top-center' });
+        toast.error(error);
         this.setState({ unarchivingUser: null });
       });
   };
 
-  createUser = (event) => {
+  inviteBulkUsers = (event) => {
     event.preventDefault();
+    if (this.handleFileValidation()) {
+      const formData = new FormData();
+      this.setState({
+        uploadingUsers: true,
+      });
 
+      formData.append('file', this.state.file);
+      organizationUserService
+        .inviteBulkUsers(formData)
+        .then((res) => {
+          toast.success(res.message, {
+            position: 'top-center',
+          });
+          this.fetchUsers();
+          this.setState({
+            uploadingUsers: false,
+            isInviteUsersDrawerOpen: false,
+            file: null,
+          });
+        })
+        .catch(({ error }) => {
+          toast.error(error, { position: 'top-center' });
+          this.setState({ uploadingUsers: false });
+        });
+    }
+  };
+
+  handleFileChange = (file) => {
+    this.setState({ file });
+  };
+
+  handleNameSplit = (fullName) => {
+    const [first, last] = fullName.split(' ');
+    let fields = this.state.fields;
+    fields['firstName'] = first;
+    fields['lastName'] = last;
+    this.setState({
+      fields,
+    });
+  };
+
+  manageUser = (currentOrgUserId, selectedGroups, groupsToAdd, groupsToRemove) => {
+    const isEditing = this.state.userDrawerMode === USER_DRAWER_MODES.EDIT;
     if (this.handleValidation()) {
+      if (!this.state.fields.fullName?.trim()) {
+        toast.error('Name should not be empty');
+        return;
+      }
+      this.handleNameSplit(this.state.fields['fullName']);
       let fields = {};
       Object.keys(this.state.fields).map((key) => {
         fields[key] = '';
@@ -141,274 +195,189 @@ class ManageOrgUsers extends React.Component {
         creatingUser: true,
       });
 
-      organizationUserService
-        .create(
-          this.state.fields.firstName,
-          this.state.fields.lastName,
-          this.state.fields.email,
-          this.state.fields.role
-        )
+      const service = isEditing ? organizationUserService.updateOrgUser : organizationUserService.create;
+      const createUserBody = {
+        first_name: this.state.fields.firstName,
+        last_name: this.state.fields.lastName,
+        email: this.state.fields.email,
+        groups: selectedGroups,
+      };
+
+      const updateUserBody = {
+        addGroups: groupsToAdd,
+        removeGroups: groupsToRemove,
+      };
+      service(currentOrgUserId, isEditing ? updateUserBody : createUserBody)
         .then(() => {
-          toast.success('User has been created', {
-            position: 'top-center',
-          });
+          toast.success(`User has been ${isEditing ? 'updated' : 'created'}`);
           this.fetchUsers();
           this.setState({
             creatingUser: false,
-            showNewUserForm: false,
             fields: fields,
+            isInviteUsersDrawerOpen: false,
+            currentEditingUser: null,
+            userDrawerMode: USER_DRAWER_MODES.CREATE,
           });
         })
         .catch(({ error }) => {
-          toast.error(error, { position: 'top-center' });
+          toast.error(error);
           this.setState({ creatingUser: false });
         });
     } else {
-      this.setState({ creatingUser: false, showNewUserForm: true });
+      this.setState({ creatingUser: false, file: null, isInviteUsersDrawerOpen: true });
     }
   };
 
-  logout = () => {
-    authenticationService.logout();
-    history.push('/login');
+  componentDidMount() {
+    this.setQueryParameter();
+  }
+
+  generateInvitationURL = (user) => {
+    if (user.account_setup_token) {
+      return urlJoin(
+        window.public_config?.TOOLJET_HOST,
+        window.public_config?.SUB_PATH ?? '',
+        `/invitations/${user.account_setup_token}/workspaces/${user.invitation_token}?oid=${authenticationService?.currentSessionValue.current_organization_id}`
+      );
+    }
+    return urlJoin(
+      window.public_config?.TOOLJET_HOST,
+      window.public_config?.SUB_PATH ?? '',
+      `/organization-invitations/${user.invitation_token}?oid=${authenticationService?.currentSessionValue.current_organization_id}`
+    );
   };
 
-  generateInvitationURL = (user) => window.location.origin + '/invitations/' + user.invitation_token;
-
   invitationLinkCopyHandler = () => {
-    toast.success('Invitation URL copied', {
-      position: 'bottom-right',
+    toast.success('Invitation URL copied');
+  };
+
+  pageChanged = (page) => {
+    this.fetchUsers(page, this.state.options);
+  };
+
+  filterList = (options) => {
+    this.fetchUsers(1, options);
+  };
+  setIsInviteUsersDrawerOpen = (val) => {
+    this.setState({ isInviteUsersDrawerOpen: val });
+  };
+
+  onCancel = () => {
+    this.setState({
+      errors: {},
+      file: null,
+      fields: {},
+      currentEditingUser: null,
+      userDrawerMode: USER_DRAWER_MODES.CREATE,
     });
   };
 
-  render() {
-    const { isLoading, showNewUserForm, creatingUser, users, archivingUser, unarchivingUser } = this.state;
-    return (
-      <div className="wrapper org-users-page">
-        <Header switchDarkMode={this.props.switchDarkMode} darkMode={this.props.darkMode} />
-        <ReactTooltip type="dark" effect="solid" delayShow={250} />
+  toggleEditUserDrawer = (user) => {
+    this.setState({ currentEditingUser: user, isInviteUsersDrawerOpen: true, userDrawerMode: USER_DRAWER_MODES.EDIT });
+  };
 
-        <div className="page-wrapper">
-          <div className="container-xl">
-            <div className="page-header d-print-none">
-              <div className="row align-items-center">
-                <div className="col">
-                  <div className="page-pretitle"></div>
-                  <h2 className="page-title">Users & Permissions</h2>
+  setUserValues = (user) => {
+    this.setState({ fields: user });
+  };
+
+  render() {
+    const {
+      isLoading,
+      uploadingUsers,
+      users,
+      archivingUser,
+      unarchivingUser,
+      meta,
+      currentEditingUser,
+      userDrawerMode,
+    } = this.state;
+    return (
+      <ErrorBoundary showFallback={true}>
+        <div className="wrapper org-users-page animation-fade">
+          {this.state.isInviteUsersDrawerOpen && (
+            <ManageOrgUsersDrawer
+              isInviteUsersDrawerOpen={this.state.isInviteUsersDrawerOpen}
+              setIsInviteUsersDrawerOpen={this.setIsInviteUsersDrawerOpen}
+              manageUser={this.manageUser}
+              changeNewUserOption={this.changeNewUserOption}
+              errors={this.state.errors}
+              fields={this.state.fields}
+              handleFileChange={this.handleFileChange}
+              uploadingUsers={uploadingUsers}
+              onCancel={this.onCancel}
+              inviteBulkUsers={this.inviteBulkUsers}
+              userDrawerMode={userDrawerMode}
+              currentEditingUser={currentEditingUser}
+              setUserValues={this.setUserValues}
+              creatingUser={this.state.creatingUser}
+            />
+          )}
+
+          <div className="page-wrapper">
+            <div>
+              <div className="page-header workspace-page-header">
+                <div className="align-items-center d-flex">
+                  <div className="tj-text-sm font-weight-500" data-cy="title-users-page">
+                    {meta?.total_count} users
+                  </div>
+                  <div className=" workspace-setting-buttons-wrap">
+                    <ButtonSolid
+                      data-cy="button-invite-new-user"
+                      className="singleuser-btn"
+                      onClick={() => this.setState({ isInviteUsersDrawerOpen: true })}
+                      leftIcon="usergroup"
+                      fill={'#FDFDFE'}
+                    >
+                      {this.props.t('header.organization.menus.manageUsers.addNewUser', 'Add users')}
+                    </ButtonSolid>
+                  </div>
                 </div>
-                <div className="col-auto ms-auto d-print-none">
-                  {!showNewUserForm && (
-                    <div className="btn btn-primary" onClick={() => this.setState({ showNewUserForm: true })}>
-                      Invite new user
+              </div>
+
+              <div className="page-body">
+                <UsersFilter
+                  filterList={this.filterList}
+                  darkMode={this.props.darkMode}
+                  clearIconPressed={() => this.fetchUsers()}
+                />
+
+                {users?.length === 0 && (
+                  <div className="workspace-settings-table-wrap">
+                    <div className="d-flex justify-content-center flex-column tj-user-table-wrapper">
+                      <span className="text-center font-weight-bold" data-cy="text-no-result-found">
+                        No result found
+                      </span>
+                      <small className="text-center text-muted" data-cy="text-try-changing-filters">
+                        Try changing the filters
+                      </small>
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
+
+                {users?.length !== 0 && (
+                  <UsersTable
+                    isLoading={isLoading}
+                    users={users}
+                    unarchivingUser={unarchivingUser}
+                    archivingUser={archivingUser}
+                    meta={meta}
+                    generateInvitationURL={this.generateInvitationURL}
+                    invitationLinkCopyHandler={this.invitationLinkCopyHandler}
+                    unarchiveOrgUser={this.unarchiveOrgUser}
+                    archiveOrgUser={this.archiveOrgUser}
+                    pageChanged={this.pageChanged}
+                    darkMode={this.props.darkMode}
+                    translator={this.props.t}
+                    toggleEditUserDrawer={this.toggleEditUserDrawer}
+                  />
+                )}
               </div>
             </div>
           </div>
-
-          <div className="page-body">
-            {showNewUserForm && (
-              <div className="container-xl">
-                <div className="card">
-                  <div className="card-header">
-                    <h3 className="card-title">Add new user</h3>
-                  </div>
-                  <div className="card-body">
-                    <form onSubmit={this.createUser} noValidate>
-                      <div className="form-group mb-3 ">
-                        <div className="row">
-                          <div className="col">
-                            <input
-                              type="text"
-                              className="form-control"
-                              placeholder="Enter First Name"
-                              name="firstName"
-                              onChange={this.changeNewUserOption.bind(this, 'firstName')}
-                              value={this.state.fields['firstName']}
-                            />
-                            <span className="text-danger">{this.state.errors['firstName']}</span>
-                          </div>
-                          <div className="col">
-                            <input
-                              type="text"
-                              className="form-control"
-                              placeholder="Enter Last Name"
-                              name="lastName"
-                              onChange={this.changeNewUserOption.bind(this, 'lastName')}
-                              value={this.state.fields['lastName']}
-                            />
-                            <span className="text-danger">{this.state.errors['lastName']}</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="form-group mb-3 ">
-                        <label className="form-label">Email address</label>
-                        <div>
-                          <input
-                            type="text"
-                            className="form-control"
-                            aria-describedby="emailHelp"
-                            placeholder="Enter email"
-                            name="email"
-                            onChange={this.changeNewUserOption.bind(this, 'email')}
-                            value={this.state.fields['email']}
-                          />
-                          <span className="text-danger">{this.state.errors['email']}</span>
-                        </div>
-                      </div>
-                      <div className="form-footer">
-                        <button
-                          type="button"
-                          className="btn btn-light mr-2"
-                          onClick={() =>
-                            this.setState({
-                              showNewUserForm: false,
-                              newUser: {},
-                            })
-                          }
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="submit"
-                          className={`btn mx-2 btn-primary ${creatingUser ? 'btn-loading' : ''}`}
-                          disabled={creatingUser}
-                        >
-                          Create User
-                        </button>
-                      </div>
-                    </form>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {!showNewUserForm && (
-              <div className="container-xl">
-                <div className="card">
-                  <div
-                    className="card-table fixedHeader table-responsive table-bordered"
-                    ref={this.tableRef}
-                    style={{ maxHeight: this.tableRef.current && this.calculateOffset() }}
-                  >
-                    <table data-testid="usersTable" className="table table-vcenter" disabled={true}>
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Email</th>
-                          <th>Status</th>
-                          <th className="w-1"></th>
-                        </tr>
-                      </thead>
-                      {isLoading ? (
-                        <tbody className="w-100" style={{ minHeight: '300px' }}>
-                          {Array.from(Array(4)).map((_item, index) => (
-                            <tr key={index}>
-                              <td className="col-2 p-3">
-                                <div className="row">
-                                  <div
-                                    className="skeleton-image col-auto"
-                                    style={{ width: '25px', height: '25px' }}
-                                  ></div>
-                                  <div className="skeleton-line w-10 col mx-3"></div>
-                                </div>
-                              </td>
-                              <td className="col-4 p-3">
-                                <div className="skeleton-line w-10"></div>
-                              </td>
-                              <td className="col-2 p-3">
-                                <div className="skeleton-line"></div>
-                              </td>
-                              <td className="text-muted col-auto col-1 pt-3">
-                                <div className="skeleton-line"></div>
-                              </td>
-                              <td className="text-muted col-auto col-1 pt-3">
-                                <div className="skeleton-line"></div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      ) : (
-                        <tbody>
-                          {users.map((user) => (
-                            <tr key={user.id}>
-                              <td>
-                                <span className="avatar bg-azure-lt avatar-sm">
-                                  {user.first_name ? user.first_name[0] : ''}
-                                  {user.last_name ? user.last_name[0] : ''}
-                                </span>
-                                <span
-                                  className="mx-3"
-                                  style={{
-                                    display: 'inline-flex',
-                                    marginBottom: '7px',
-                                  }}
-                                >
-                                  {user.name}
-                                </span>
-                              </td>
-                              <td className="text-muted">
-                                <a className="text-reset user-email">{user.email}</a>
-                              </td>
-                              <td className="text-muted">
-                                <span
-                                  className={`badge bg-${
-                                    user.status === 'invited'
-                                      ? 'warning'
-                                      : user.status === 'archived'
-                                      ? 'danger'
-                                      : 'success'
-                                  } me-1 m-1`}
-                                ></span>
-                                <small className="user-status">{user.status}</small>
-                                {user.status === 'invited' && 'invitation_token' in user ? (
-                                  <CopyToClipboard
-                                    text={this.generateInvitationURL(user)}
-                                    onCopy={this.invitationLinkCopyHandler}
-                                  >
-                                    <img
-                                      data-tip="Copy invitation link"
-                                      className="svg-icon"
-                                      src="/assets/images/icons/copy.svg"
-                                      width="15"
-                                      height="15"
-                                      style={{
-                                        cursor: 'pointer',
-                                      }}
-                                    ></img>
-                                  </CopyToClipboard>
-                                ) : (
-                                  ''
-                                )}
-                              </td>
-                              <td>
-                                <a
-                                  onClick={() => {
-                                    user.status === 'archived'
-                                      ? this.unarchiveOrgUser(user.id)
-                                      : this.archiveOrgUser(user.id);
-                                  }}
-                                >
-                                  {user.status === 'archived' ? 'Unarchive' : 'Archive'}
-
-                                  {unarchivingUser === user.id || archivingUser === user.id ? '...' : ''}
-                                </a>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      )}
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
         </div>
-      </div>
+      </ErrorBoundary>
     );
   }
 }
 
-export { ManageOrgUsers };
+export const ManageOrgUsers = withTranslation()(ManageOrgUsersComponent);

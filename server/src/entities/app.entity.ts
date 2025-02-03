@@ -1,26 +1,24 @@
 import {
   Entity,
-  Column,
-  PrimaryGeneratedColumn,
-  CreateDateColumn,
-  UpdateDateColumn,
-  ManyToOne,
-  JoinColumn,
-  OneToMany,
   AfterLoad,
-  BaseEntity,
-  ManyToMany,
-  JoinTable,
   AfterInsert,
   getRepository,
   getManager,
+  Column,
+  CreateDateColumn,
+  JoinColumn,
+  JoinTable,
+  ManyToMany,
+  ManyToOne,
+  OneToMany,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
+  BaseEntity,
 } from 'typeorm';
-import { User } from './user.entity';
 import { AppVersion } from './app_version.entity';
-import { DataQuery } from './data_query.entity';
-import { DataSource } from './data_source.entity';
-import { GroupPermission } from './group_permission.entity';
 import { AppGroupPermission } from './app_group_permission.entity';
+import { GroupPermission } from './group_permission.entity';
+import { User } from './user.entity';
 
 @Entity({ name: 'apps' })
 export class App extends BaseEntity {
@@ -35,6 +33,9 @@ export class App extends BaseEntity {
 
   @Column({ name: 'is_public', default: true })
   isPublic: boolean;
+
+  @Column({ name: 'is_maintenance_on', default: false })
+  isMaintenanceOn: boolean;
 
   @Column({ name: 'icon' })
   icon: string;
@@ -62,16 +63,6 @@ export class App extends BaseEntity {
     onDelete: 'CASCADE',
   })
   appVersions: AppVersion[];
-
-  @OneToMany(() => DataQuery, (dataQuery) => dataQuery.app, {
-    onDelete: 'CASCADE',
-  })
-  dataQueries: DataQuery[];
-
-  @OneToMany(() => DataSource, (dataSource) => dataSource.app, {
-    onDelete: 'CASCADE',
-  })
-  dataSources: DataSource[];
 
   @ManyToMany(() => GroupPermission)
   @JoinTable({

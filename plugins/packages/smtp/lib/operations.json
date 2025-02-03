@@ -1,12 +1,11 @@
-
 {
   "$schema": "https://raw.githubusercontent.com/ToolJet/ToolJet/develop/plugins/schemas/operations.schema.json",
   "title": "SMTP datasource",
   "description": "A schema defining SMTP datasource",
   "type": "api",
   "defaults": {
-    "content_type":{
-      "value":"plain_text"
+    "content_type": {
+      "value": "plain_text"
     }
   },
   "properties": {
@@ -36,12 +35,34 @@
       "key": "to",
       "label": "To",
       "type": "codehinter",
-      "description": "Field for reciever address",
-      "placeholder": "Enter reciever address",
+      "description": "Field for receiver address",
+      "placeholder": "Enter receiver address",
       "width": "320px",
       "height": "36px",
       "className": "codehinter-plugins",
       "lineNumbers": false
+    },
+    "cc": {
+      "label": "CC mail to",
+      "key": "cc",
+      "type": "codehinter",
+      "lineNumbers": false,
+      "description": "Enter CC recipient(s)",
+      "placeholder": "{{['dev@tooljet.io']}}",
+      "width": "320px",
+      "height": "36px",
+      "className": "codehinter-plugins"
+    },
+    "bcc": {
+      "label": "BCC mail to",
+      "key": "bcc",
+      "type": "codehinter",
+      "lineNumbers": false,
+      "description": "Enter BCC recipient(s)",
+      "placeholder": "{{['dev@tooljet.io']}}",
+      "width": "320px",
+      "height": "36px",
+      "className": "codehinter-plugins"
     },
     "subject": {
       "key": "subject",
@@ -53,21 +74,23 @@
       "className": "codehinter-plugins",
       "lineNumbers": false
     },
-    "textContent":{
+    "textContent": {
       "key": "textContent",
       "label": "Text",
       "type": "codehinter",
       "description": "Field for message",
       "placeholder": "Enter message",
-      "height": "150px"    
+      "height": "150px",
+      "editorType": "extendedSingleLine"
     },
-    "htmlContent":{
+    "htmlContent": {
       "key": "htmlContent",
       "label": "HTML",
       "type": "codehinter",
       "description": "Field for message",
       "placeholder": "Enter message",
-      "height": "150px"
+      "height": "150px",
+      "editorType": "extendedSingleLine"
     },
     "attachment_array": {
       "key": "attachment_array",

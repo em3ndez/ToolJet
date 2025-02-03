@@ -1,30 +1,45 @@
 import React from 'react';
-import { ListGroup } from 'react-bootstrap';
+import FolderList from '@/_ui/FolderList/FolderList';
 
 const categoryTitles = {
   all: 'All categories',
-  sales: 'Sales',
-  'product-management': 'Product management',
+  'customer-support': 'Customer support',
+  'data-and-analytics': 'Data and analytics',
+  'developer-utilities': 'Developer utilities',
+  'financial-services': 'Financial services',
+  'human-resources': 'Human resources',
   operations: 'Operations',
-  'data-and-analytics': 'Data and Analytics',
+  'product-management': 'Product management',
+  'sales-and-marketing': 'Sales and marketing',
 };
 
 export default function Categories(props) {
   const { categories, selectedCategory, selectCategory } = props;
   return (
-    <ListGroup className="mt-2 template-categories">
+    <div className="mt-2 template-categories">
       {categories.map((category) => (
-        <ListGroup.Item
-          action
-          active={category.id === selectedCategory.id}
-          key={category.id}
+        <FolderList
+          selectedItem={category.id === selectedCategory.id}
           onClick={() => selectCategory(category)}
-          className="d-flex justify-content-between align-items-start"
+          key={category.id}
+          dataCy={`${String(categoryTitles[category.id]).toLowerCase().replace(/\s+/g, '-')}`}
         >
-          <span>{categoryTitles[category.id]}</span>
-          <span>{category.count}</span>
-        </ListGroup.Item>
+          <div className="d-flex template-list-items-wrap">
+            <p
+              className="tj-text tj-text-sm"
+              data-cy={`${String(categoryTitles[category.id]).toLowerCase().replace(/\s+/g, '-')}-category-title`}
+            >
+              {categoryTitles[category.id]}
+            </p>
+          </div>
+          <p
+            className="tj-text tj-text-sm"
+            data-cy={`${String(categoryTitles[category.id]).toLowerCase().replace(/\s+/g, '-')}-category-count`}
+          >
+            {category.count}
+          </p>
+        </FolderList>
       ))}
-    </ListGroup>
+    </div>
   );
 }

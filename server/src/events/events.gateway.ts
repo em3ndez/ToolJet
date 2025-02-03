@@ -1,16 +1,17 @@
 import {
   SubscribeMessage,
+  MessageBody,
   WebSocketGateway,
   WebSocketServer,
   OnGatewayConnection,
   OnGatewayDisconnect,
-  MessageBody,
 } from '@nestjs/websockets';
 import { Server } from 'ws';
 import { AuthService } from 'src/services/auth.service';
 import { isEmpty } from 'lodash';
+import { maybeSetSubPath } from '../helpers/utils.helper';
 
-@WebSocketGateway()
+@WebSocketGateway({ path: maybeSetSubPath('/ws') })
 export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(private authService: AuthService) {}
   @WebSocketServer()
@@ -29,7 +30,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('authenticate')
   onAuthenticateEvent(client: any, data: string) {
     const signedJwt = this.authService.verifyToken(data);
-    if (isEmpty(signedJwt)) client._events.close();
+    if (isEmpty(signedJwt)) client.close();
     else client.isAuthenticated = true;
     return;
   }

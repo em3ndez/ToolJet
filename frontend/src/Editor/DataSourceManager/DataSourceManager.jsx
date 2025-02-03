@@ -1,48 +1,79 @@
 import React from 'react';
-import { datasourceService, authenticationService } from '@/_services';
+import { datasourceService, pluginsService, globalDatasourceService, libraryAppService } from '@/_services';
+import cx from 'classnames';
 import { Modal, Button, Tab, Row, Col, ListGroup } from 'react-bootstrap';
 import { toast } from 'react-hot-toast';
 import { getSvgIcon } from '@/_helpers/appUtils';
 import { TestConnection } from './TestConnection';
+import { getWorkspaceId, deepEqual, decodeEntities } from '@/_helpers/utils';
 import {
   DataBaseSources,
   ApiSources,
   DataSourceTypes,
+  SourceComponent,
   SourceComponents,
   CloudStorageSources,
 } from './SourceComponents';
 import { CopyToClipboard } from 'react-copy-to-clipboard';
 import config from 'config';
-import { isEmpty } from 'lodash';
-import { Card } from '@/_ui/card';
+import { capitalize, isEmpty } from 'lodash';
+import { Card } from '@/_ui/Card';
+import { withTranslation, useTranslation } from 'react-i18next';
+import { camelizeKeys, decamelizeKeys } from 'humps';
+import { ButtonSolid } from '@/_ui/AppButton/AppButton';
+import SolidIcon from '@/_ui/Icon/SolidIcons';
+import { ConfirmDialog } from '@/_components';
+import { shallow } from 'zustand/shallow';
+import { useDataSourcesStore } from '../../_stores/dataSourcesStore';
+import { withRouter } from '@/_hoc/withRouter';
+import { DATA_SOURCE_TYPE } from '@/_helpers/constants';
+import './dataSourceManager.theme.scss';
+import { useAppVersionStore } from '@/_stores/appVersionStore';
 
-class DataSourceManager extends React.Component {
+class DataSourceManagerComponent extends React.Component {
   constructor(props) {
     super(props);
 
     let selectedDataSource = null;
+    let dataSourceSchema = null;
+    let selectedDataSourceIcon = null;
     let options = {};
     let dataSourceMeta = {};
-
+    let datasourceName = '';
     if (props.selectedDataSource) {
       selectedDataSource = props.selectedDataSource;
       options = selectedDataSource.options;
-      dataSourceMeta = DataSourceTypes.find((source) => source.kind === selectedDataSource.kind);
+      dataSourceMeta = this.getDataSourceMeta(selectedDataSource);
+      dataSourceSchema = props.selectedDataSource?.plugin?.manifestFile?.data;
+      selectedDataSourceIcon = props.selectDataSource?.plugin?.iconFile.data;
+      datasourceName = props.selectedDataSource?.name;
     }
 
     this.state = {
-      currentUser: authenticationService.currentUserValue,
       showModal: true,
       appId: props.appId,
       selectedDataSource,
+      dataSourceSchema,
+      selectedDataSourceIcon,
       options,
       dataSourceMeta,
       isSaving: false,
       isCopied: false,
       queryString: null,
+      plugins: [],
       filteredDatasources: [],
       activeDatasourceList: '#alldatasources',
       suggestingDatasources: false,
+      scope: props?.scope,
+      modalProps: props?.modalProps ?? {},
+      showBackButton: props?.showBackButton ?? true,
+      pluginsLoaded: false,
+      dataSourceConfirmModalProps: { isOpen: false, dataSource: null },
+      addingDataSource: false,
+      createdDataSource: null,
+      unsavedChangesModal: false,
+      datasourceName,
+      creatingApp: false,
     };
   }
 
@@ -50,24 +81,62 @@ class DataSourceManager extends React.Component {
     this.setState({
       appId: this.props.appId,
     });
+
+    pluginsService
+      .findAll()
+      .then(({ data = [] }) => {
+        this.setState({ plugins: data, pluginsLoaded: true });
+      })
+      .catch((error) => {
+        this.setState({ pluginsLoaded: true });
+        toast.error(error?.message || 'failed to fetch plugins');
+      });
   }
 
   componentDidUpdate(prevProps) {
+    this.props.setGlobalDataSourceStatus({ saveAction: this.createDataSource });
     if (prevProps.selectedDataSource !== this.props.selectedDataSource) {
+      let dataSourceMeta = this.getDataSourceMeta(this.props.selectedDataSource);
       this.setState({
         selectedDataSource: this.props.selectedDataSource,
         options: this.props.selectedDataSource?.options,
-        dataSourceMeta: DataSourceTypes.find((source) => source.kind === this.props.selectedDataSource?.kind),
+        dataSourceMeta,
+        dataSourceSchema: this.props.selectedDataSource?.plugin?.manifestFile?.data,
+        selectedDataSourceIcon: this.props.selectedDataSource?.plugin?.iconFile?.data,
+        connectionTestError: null,
+        datasourceName: this.props.selectedDataSource?.name,
       });
     }
   }
 
+  getDataSourceMeta = (dataSource) => {
+    if (!dataSource) return {};
+
+    if (dataSource?.pluginId) {
+      let dataSourceMeta = camelizeKeys(dataSource?.plugin?.manifestFile?.data.source);
+      dataSourceMeta.options = decamelizeKeys(dataSourceMeta.options);
+
+      return dataSourceMeta;
+    }
+
+    return DataSourceTypes.find((source) => source.kind === dataSource.kind);
+  };
+
   selectDataSource = (source) => {
-    this.setState({
-      dataSourceMeta: source,
-      selectedDataSource: source,
-      name: source.kind,
-    });
+    this.hideModal();
+    this.setState(
+      {
+        dataSourceMeta: source.manifestFile?.data?.source ?? source,
+        selectedDataSource: source.manifestFile?.data?.source ?? source,
+        options: source?.defaults ?? source?.options,
+        selectedDataSourceIcon: source.iconFile?.data,
+        name: source.manifestFile?.data?.source?.kind ?? source.kind,
+        dataSourceSchema: source.manifestFile?.data,
+        selectedDataSourcePluginId: source.id,
+        datasourceName: source.name,
+      },
+      () => this.createDataSource()
+    );
   };
 
   onNameChanged = (newName) => {
@@ -98,13 +167,15 @@ class DataSourceManager extends React.Component {
   };
 
   optionchanged = (option, value) => {
-    return this.setStateAsync({
+    const stateToUpdate = {
       connectionTestError: null,
       options: {
         ...this.state.options,
-        [option]: { value },
+        [option]: { value: value },
       },
-    });
+    };
+
+    return this.setStateAsync(stateToUpdate);
   };
 
   hideModal = () => {
@@ -112,40 +183,113 @@ class DataSourceManager extends React.Component {
     this.props.hideModal();
   };
 
+  resetDataSourceConfirmModal = () => {
+    this.setState({
+      dataSourceConfirmModalProps: {
+        isOpen: false,
+        dataSource: null,
+      },
+    });
+  };
+
   createDataSource = () => {
-    const { appId, options, selectedDataSource } = this.state;
+    const { appId, options, selectedDataSource, selectedDataSourcePluginId, dataSourceMeta, dataSourceSchema } =
+      this.state;
+    const OAuthDs = ['slack', 'zendesk', 'googlesheets', 'salesforce'];
     const name = selectedDataSource.name;
     const kind = selectedDataSource.kind;
-    const appVersionId = this.props.editingVersionId;
+    const pluginId = selectedDataSourcePluginId;
+    const appVersionId = useAppVersionStore?.getState()?.editingVersion?.id;
+    const currentEnvironment = this.props.currentEnvironment?.id;
+    const scope = this.state?.scope || selectedDataSource?.scope;
 
-    const parsedOptions = Object.keys(options).map((key) => {
-      const keyMeta = selectedDataSource.options[key];
+    const parsedOptions = Object?.keys(options)?.map((key) => {
+      const keyMeta = dataSourceMeta.options[key];
       return {
         key: key,
         value: options[key].value,
         encrypted: keyMeta ? keyMeta.encrypted : false,
+        ...(!options[key]?.value && { credential_id: options[key]?.credential_id }),
       };
     });
+    if (OAuthDs.includes(kind)) {
+      const value = localStorage.getItem('OAuthCode');
+      parsedOptions.push({ key: 'code', value, encrypted: false });
+    }
     if (name.trim() !== '') {
+      let service = scope === 'global' ? globalDatasourceService : datasourceService;
       if (selectedDataSource.id) {
         this.setState({ isSaving: true });
-        datasourceService.save(selectedDataSource.id, appId, name, parsedOptions).then(() => {
-          this.setState({ isSaving: false });
-          this.hideModal();
-          toast.success('Datasource Saved', { position: 'top-center' });
-          this.props.dataSourcesChanged();
-        });
+        this.props.setGlobalDataSourceStatus({ isSaving: true, isEditing: false });
+        service
+          .save({
+            id: selectedDataSource.id,
+            name,
+            options: parsedOptions,
+            app_id: appId,
+            environment_id: currentEnvironment,
+          })
+          .then(() => {
+            this.props.updateSelectedDatasource && this.props.updateSelectedDatasource(selectedDataSource.name);
+            this.setState({ isSaving: false });
+            this.hideModal();
+            toast.success(
+              this.props.t('editor.queryManager.dataSourceManager.toast.success.dataSourceSaved', 'Data Source Saved'),
+              { position: 'top-center' }
+            );
+            this.props.dataSourcesChanged(false, selectedDataSource);
+            this.props.globalDataSourcesChanged && this.props.globalDataSourcesChanged();
+            this.props.setGlobalDataSourceStatus({ isSaving: false, isEditing: false });
+            this.resetDataSourceConfirmModal();
+          })
+          .catch(({ error }) => {
+            this.setState({ isSaving: false });
+            this.hideModal();
+            error && toast.error(error, { position: 'top-center' });
+            this.resetDataSourceConfirmModal();
+            this.props.setGlobalDataSourceStatus({ isSaving: false, isEditing: false });
+          });
       } else {
-        this.setState({ isSaving: true });
-        datasourceService.create(appId, appVersionId, name, kind, parsedOptions).then(() => {
-          this.setState({ isSaving: false });
-          this.hideModal();
-          toast.success('Datasource Added', { position: 'top-center' });
-          this.props.dataSourcesChanged();
-        });
+        this.setState({ isSaving: true, addingDataSource: true });
+        service
+          .create({
+            plugin_id: pluginId,
+            name,
+            kind,
+            options: parsedOptions,
+            app_id: appId,
+            app_version_id: appVersionId,
+            scope,
+          })
+          .then((data) => {
+            this.setState({ isSaving: false, addingDataSource: false });
+            this.props.updateSelectedDatasource && this.props.updateSelectedDatasource(name);
+
+            this.hideModal();
+            toast.success(
+              this.props.t('editor.queryManager.dataSourceManager.toast.success.dataSourceAdded', 'Data Source Added'),
+              { position: 'top-center' }
+            );
+
+            this.props.dataSourcesChanged(false, data);
+            this.props.globalDataSourcesChanged && this.props.globalDataSourcesChanged();
+            this.resetDataSourceConfirmModal();
+          })
+          .catch(({ error }) => {
+            this.setState({ isSaving: false, addingDataSource: false });
+            this.hideModal();
+            error && toast.error(error, { position: 'top-center' });
+            this.resetDataSourceConfirmModal();
+          });
       }
     } else {
-      toast.error('The name of datasource should not be empty', { position: 'top-center' });
+      toast.error(
+        this.props.t(
+          'editor.queryManager.dataSourceManager.toast.error.noEmptyDsName',
+          'The name of datasource should not be empty'
+        ),
+        { position: 'top-center' }
+      );
     }
   };
 
@@ -175,13 +319,14 @@ class DataSourceManager extends React.Component {
     this.setState({ suggestingDatasources: true, activeDatasourceList: '#' });
   };
 
-  renderSourceComponent = (kind) => {
+  renderSourceComponent = (kind, isPlugin = false) => {
     const { options, isSaving } = this.state;
 
     const sourceComponentName = kind.charAt(0).toUpperCase() + kind.slice(1);
-    const ComponentToRender = SourceComponents[sourceComponentName];
+    const ComponentToRender = isPlugin ? SourceComponent : SourceComponents[sourceComponentName] || SourceComponent;
     return (
       <ComponentToRender
+        dataSourceSchema={this.state.dataSourceSchema}
         optionsChanged={(options = {}) => this.setState({ options })}
         optionchanged={this.optionchanged}
         createDataSource={this.createDataSource}
@@ -190,6 +335,7 @@ class DataSourceManager extends React.Component {
         hideModal={this.hideModal}
         selectedDataSource={this.state.selectedDataSource}
         isEditMode={!isEmpty(this.state.selectedDataSource)}
+        currentAppEnvironmentId={this.props.currentEnvironment?.id}
       />
     );
   };
@@ -221,7 +367,10 @@ class DataSourceManager extends React.Component {
             queryString={this.state.queryString}
             handleBackToAllDatasources={goBacktoAllDatasources}
             darkMode={this.props.darkMode}
-            placeholder={'Suggest an integration'}
+            placeholder={this.props.t(
+              'editor.queryManager.dataSourceManager.suggestAnIntegration',
+              'Suggest an integration'
+            )}
           />
         </div>
       );
@@ -244,17 +393,22 @@ class DataSourceManager extends React.Component {
               <Tab.Content>
                 {suggestingDatasources ? (
                   <div className="suggestion-container">
-                    <h4 className="justify-content-start">Suggest Datasource</h4>
+                    <h4 className="justify-content-start">
+                      {this.props.t('editor.queryManager.dataSourceManager.suggestDataSource', 'Suggest Datasource')}
+                    </h4>
                     {datasourceSuggestionUI()}
                   </div>
                 ) : (
                   <>
                     <div className="input-icon modal-searchbar">
                       <SearchBoxContainer
+                        dataCy={'datasource-search-input'}
                         onChange={this.handleSearch}
                         onClear={this.handleBackToAllDatasources}
                         queryString={this.state.queryString}
                         activeDatasourceList={this.state.activeDatasourceList}
+                        scope={this.state.scope}
+                        className="tj-text"
                       />
                     </div>
                     {datasources.map((datasource) => (
@@ -270,13 +424,16 @@ class DataSourceManager extends React.Component {
                     ))}
                   </>
                 )}
-                {this.state.queryString && this.state.filteredDatasources.length === 0 && (
+                {!suggestingDatasources && this.state.queryString && this.state.filteredDatasources.length === 0 && (
                   <div className="empty-state-wrapper row">
                     <EmptyStateContainer
                       queryString={this.state.queryString}
                       handleBackToAllDatasources={this.handleBackToAllDatasources}
                       darkMode={this.props.darkMode}
-                      placeholder={'Tell us what you were looking for?'}
+                      placeholder={this.props.t(
+                        'editor.queryManager.dataSourceManager.whatLookingFor',
+                        'Tell us what you were looking for?'
+                      )}
                     />
                   </div>
                 )}
@@ -293,13 +450,19 @@ class DataSourceManager extends React.Component {
       databases: DataBaseSources,
       apis: ApiSources,
       cloudStorages: CloudStorageSources,
+      plugins: this.state.plugins,
       filteredDatasources: this.state.filteredDatasources,
     };
     const dataSourceList = [
       {
         type: 'All Datasources',
         key: '#alldatasources',
-        list: [...allDataSourcesList.databases, ...allDataSourcesList.apis, ...allDataSourcesList.cloudStorages],
+        list: [
+          ...allDataSourcesList.databases,
+          ...allDataSourcesList.apis,
+          ...allDataSourcesList.cloudStorages,
+          ...allDataSourcesList.plugins,
+        ],
         renderDatasources: () => this.renderCardGroup(allDataSourcesList, 'All Datasources'),
       },
       {
@@ -321,6 +484,12 @@ class DataSourceManager extends React.Component {
         renderDatasources: () => this.renderCardGroup(allDataSourcesList.cloudStorages, 'Cloud Storages'),
       },
       {
+        type: 'Plugins',
+        key: '#plugins',
+        list: allDataSourcesList.plugins,
+        renderDatasources: () => this.renderCardGroup(allDataSourcesList.plugins, 'Plugins'),
+      },
+      {
         type: 'Filtered Datasources',
         key: '#filtereddatasources',
         list: allDataSourcesList.filteredDatasources,
@@ -332,7 +501,7 @@ class DataSourceManager extends React.Component {
   };
 
   renderSidebarList = () => {
-    const dataSourceList = this.datasourcesGroups().splice(0, 4);
+    const dataSourceList = this.datasourcesGroups().splice(0, 5);
 
     const updateSuggestionState = () => {
       this.updateSuggestedDatasources();
@@ -343,16 +512,21 @@ class DataSourceManager extends React.Component {
         <ListGroup className="datasource-lists-modal" variant="flush">
           {dataSourceList.map((datasource) => (
             <ListGroup.Item key={datasource.key} eventKey={datasource.key}>
-              {datasource.type}
+              {`${datasource.type} (${datasource.list.length})`}
             </ListGroup.Item>
           ))}
         </ListGroup>
         <div className="datasource-modal-sidebar-footer">
           <p>
-            <span className="footer-text">Don&apos;t see what you were looking for?</span>
+            <span className="footer-text">
+              {this.props.t(
+                'editor.queryManager.dataSourceManager.noResultFound',
+                `Don't see what you were looking for?`
+              )}
+            </span>
             <br />
             <span className="link-span" onClick={updateSuggestionState}>
-              Suggest
+              {this.props.t('editor.queryManager.dataSourceManager.suggest', 'Suggest')}
             </span>
           </p>
         </div>
@@ -360,42 +534,96 @@ class DataSourceManager extends React.Component {
     );
   };
 
+  createSampleApp = () => {
+    let _self = this;
+    _self.setState({ creatingApp: true });
+    libraryAppService
+      .createSampleApp()
+      .then((data) => {
+        const workspaceId = getWorkspaceId();
+        window.open(`/${workspaceId}/apps/${data.app[0].id}`, '_blank');
+        toast.success('App created successfully!');
+        _self.setState({ creatingApp: false });
+      })
+      .catch((errorResponse) => {
+        _self.setState({ creatingApp: false });
+        if (errorResponse.statusCode === 409) {
+          return false;
+        } else {
+          throw errorResponse;
+        }
+      });
+  };
+
+  renderSampleDBModal = () => {
+    const { dataSourceMeta, selectedDataSourceIcon, creatingApp } = this.state;
+    return (
+      <div className="sample-db-modal-body">
+        <div className="row sample-db-title">
+          <div className="col-md-1">
+            {getSvgIcon(dataSourceMeta?.kind?.toLowerCase(), 35, 35, selectedDataSourceIcon)}
+          </div>
+          <div className="col-md-1">PostgreSQL</div>
+        </div>
+        <div className={'sample-db-description'}>
+          <p className={`p ${this.props.darkMode ? 'dark' : ''}`}>
+            This PostgreSQL data source is a shared resource and may show varying data
+            <br /> due to real-time updates. It&apos;s reset daily for some consistency, but please note <br />
+            it&apos;s designed for user exploration, not production use.
+          </p>
+        </div>
+        <div className="create-btn-cont">
+          <ButtonSolid
+            className={`create-app-btn`}
+            isLoading={creatingApp}
+            // disabled={isSaving || this.props.isVersionReleased || isSaveDisabled}
+            variant="primary"
+            onClick={this.createSampleApp}
+            fill={this.props.darkMode && this.props.isVersionReleased ? '#4c5155' : '#FDFDFE'}
+          >
+            Create sample application
+          </ButtonSolid>
+        </div>
+        <div className="image-container">
+          <img src="assets/images/Sample data source.png" className="img-sample-db" alt="Sample data source" />
+        </div>
+      </div>
+    );
+  };
+
   renderCardGroup = (source, type) => {
-    const renderSelectedDatasource = (dataSource) => this.selectDataSource(dataSource);
+    const openDataSourceConfirmModal = (dataSource) =>
+      this.setState({
+        dataSourceConfirmModalProps: {
+          isOpen: true,
+          dataSource,
+        },
+      });
 
     if (this.state.queryString && this.state.queryString.length > 0) {
       const filteredDatasources = this.state.filteredDatasources.map((datasource) => {
+        const src = datasource?.iconFile?.data
+          ? `data:image/svg+xml;base64,${datasource.iconFile?.data}`
+          : datasource.kind.toLowerCase();
+
         return {
           ...datasource,
-          src: datasource.kind.toLowerCase(),
+          src,
           title: datasource.name,
         };
       });
 
-      // if (filteredDatasources.length === 0) {
-      //   return (
-      //     <div className="empty-state-wrapper row">
-      //       <EmptyStateContainer
-      //         queryString={this.state.queryString}
-      //         handleBackToAllDatasources={this.handleBackToAllDatasources}
-      //         darkMode={this.props.darkMode}
-      //         placeholder={'Tell us what you were looking for?'}
-      //       />
-      //     </div>
-      //   );
-      // }
-
       return (
         <>
-          <div className="row row-deck mt-4">
+          <div className="row row-deck mt-4 ">
             <h4 className="mb-2">{type}</h4>
             {filteredDatasources.map((item) => (
               <Card
                 key={item.key}
                 title={item.title}
                 src={item.src}
-                handleClick={() => renderSelectedDatasource(item)}
-                usepluginIcon={true}
+                handleClick={() => openDataSourceConfirmModal(item)}
+                usePluginIcon={isEmpty(item?.iconFile?.data)}
                 height="35px"
                 width="35px"
               />
@@ -438,8 +666,8 @@ class DataSourceManager extends React.Component {
                   key={item.key}
                   title={item.title}
                   src={item.src}
-                  handleClick={() => renderSelectedDatasource(item)}
-                  usepluginIcon={true}
+                  handleClick={() => openDataSourceConfirmModal(item)}
+                  usePluginIcon={true}
                   height="35px"
                   width="35px"
                 />
@@ -454,8 +682,8 @@ class DataSourceManager extends React.Component {
                   key={item.key}
                   title={item.title}
                   src={item.src}
-                  handleClick={() => renderSelectedDatasource(item)}
-                  usepluginIcon={true}
+                  handleClick={() => openDataSourceConfirmModal(item)}
+                  usePluginIcon={true}
                   height="35px"
                   width="35px"
                 />
@@ -470,8 +698,8 @@ class DataSourceManager extends React.Component {
                   key={item.key}
                   title={item.title}
                   src={item.src}
-                  handleClick={() => renderSelectedDatasource(item)}
-                  usepluginIcon={true}
+                  handleClick={() => openDataSourceConfirmModal(item)}
+                  usePluginIcon={true}
                   height="35px"
                   width="35px"
                 />
@@ -483,9 +711,13 @@ class DataSourceManager extends React.Component {
     }
 
     const datasources = source.map((datasource) => {
+      const src = datasource?.iconFile?.data
+        ? `data:image/svg+xml;base64,${datasource.iconFile?.data}`
+        : datasource.kind.toLowerCase();
+
       return {
         ...datasource,
-        src: datasource.kind.toLowerCase(),
+        src,
         title: datasource.name,
       };
     });
@@ -498,9 +730,9 @@ class DataSourceManager extends React.Component {
             <Card
               key={item.key}
               title={item.title}
-              src={item.src}
-              handleClick={() => renderSelectedDatasource(item)}
-              usepluginIcon={true}
+              src={item?.src}
+              handleClick={() => openDataSourceConfirmModal(item)}
+              usePluginIcon={isEmpty(item?.iconFile?.data)}
               height="35px"
               width="35px"
             />
@@ -510,175 +742,296 @@ class DataSourceManager extends React.Component {
     );
   };
 
-  render() {
-    const { dataSourceMeta, selectedDataSource, options, isSaving, connectionTestError, isCopied } = this.state;
-
+  renderEnvironmentsTab = (selectedDataSource) => {
     return (
-      <div>
-        <Modal
-          show={this.props.showDataSourceManagerModal}
-          size={selectedDataSource ? 'lg' : 'xl'}
-          onEscapeKeyDown={this.hideModal}
-          className={selectedDataSource ? 'animation-fade' : 'select-datasource-list-modal animation-fade'}
-          contentClassName={this.props.darkMode ? 'theme-dark' : ''}
-          animation={false}
-          onExit={this.onExit}
-        >
-          <Modal.Header>
-            <Modal.Title>
-              {selectedDataSource && (
-                <div className="row">
-                  {getSvgIcon(dataSourceMeta.kind.toLowerCase(), 35, 35)}
-                  <div className="input-icon" style={{ width: '160px' }}>
-                    <input
-                      type="text"
-                      onChange={(e) => this.onNameChanged(e.target.value)}
-                      className="form-control-plaintext form-control-plaintext-sm"
-                      value={selectedDataSource.name}
-                      style={{ width: '160px' }}
-                      autoFocus
-                    />
-                    <span className="input-icon-addon">
-                      <img src="/assets/images/icons/edit-source.svg" width="12" height="12" />
-                    </span>
-                  </div>
-                </div>
-              )}
-              {!selectedDataSource && <span className="text-muted">Add new datasource</span>}
-            </Modal.Title>
-            <span
-              className={`close-btn mx-4 mt-3 ${this.props.darkMode ? 'dark' : ''}`}
-              onClick={() => this.hideModal()}
+      selectedDataSource &&
+      this.props.environment?.length > 1 && (
+        <nav className="nav nav-tabs mt-3">
+          {this.props?.environments.map((env) => (
+            <a
+              key={env?.id}
+              onClick={() => this.props.environmentChanged(env, selectedDataSource?.id)}
+              className={cx('nav-item nav-link', { active: this.props.currentEnvironment?.name === env.name })}
             >
-              <img src="/assets/images/icons/close.svg" width="12" height="12" />
-            </span>
-          </Modal.Header>
+              {capitalize(env.name)}
+            </a>
+          ))}
+        </nav>
+      )
+    );
+  };
 
-          <Modal.Body>
-            {selectedDataSource && <div>{this.renderSourceComponent(selectedDataSource.kind)}</div>}
-            {!selectedDataSource && this.segregateDataSources(this.state.suggestingDatasources, this.props.darkMode)}
-          </Modal.Body>
-
-          {selectedDataSource && !dataSourceMeta.customTesting && (
-            <Modal.Footer>
-              <div className="row w-100">
-                <div className="card-body datasource-footer-info">
-                  <div className="row">
-                    <div className="col-1">
-                      <svg
-                        className="m-2"
-                        width="14"
-                        height="16"
-                        viewBox="0 0 14 16"
-                        fill="none"
-                        xmlns="http://www.w3.org/2000/svg"
-                      >
-                        <path
-                          d="M11.4305 2.4488C10.2559 1.27263 8.68244 0.624972 7.00002 0.624972C6.17871 0.623014 5.3651 0.783339 4.60593 1.09674C3.84676 1.41014 3.15699 1.87043 2.57624 2.45119C1.99548 3.03195 1.53518 3.72172 1.22178 4.48089C0.908385 5.24006 0.74806 6.05366 0.750018 6.87497C0.750018 8.69607 1.44806 10.3996 2.66408 11.5484L2.83439 11.7082C3.53791 12.366 4.50002 13.2672 4.50002 14.0625V15.625H6.37502V10.5121L4.64533 9.53122L5.35939 8.50466L7.00002 9.37497L8.61291 8.50036L9.359 9.50349L7.62502 10.5191V15.625H9.50002V14.0625C9.50002 13.2859 10.4516 12.3855 11.1465 11.7277L11.3383 11.5457C12.5891 10.3515 13.25 8.73474 13.25 6.87497C13.2542 6.05358 13.0955 5.23952 12.7832 4.4798C12.4709 3.72009 12.0111 3.0298 11.4305 2.4488Z"
-                          fill="#EEB209"
+  render() {
+    const {
+      dataSourceMeta,
+      selectedDataSource,
+      selectedDataSourceIcon,
+      options,
+      isSaving,
+      connectionTestError,
+      isCopied,
+      dataSourceSchema,
+      pluginsLoaded,
+      dataSourceConfirmModalProps,
+      addingDataSource,
+      datasourceName,
+    } = this.state;
+    const isPlugin = dataSourceSchema ? true : false;
+    const createSelectedDataSource = (dataSource) => {
+      this.selectDataSource(dataSource);
+    };
+    const isSampleDb = selectedDataSource?.type === DATA_SOURCE_TYPE.SAMPLE;
+    const sampleDBmodalBodyStyle = isSampleDb ? { paddingBottom: '0px', borderBottom: '1px solid #E6E8EB' } : {};
+    const sampleDBmodalFooterStyle = isSampleDb ? { paddingTop: '8px' } : {};
+    const isSaveDisabled = selectedDataSource
+      ? deepEqual(options, selectedDataSource?.options, ['encrypted']) && selectedDataSource?.name === datasourceName
+      : true;
+    this.props.setGlobalDataSourceStatus({ isEditing: !isSaveDisabled });
+    const docLink = isSampleDb
+      ? 'https://docs.tooljet.com/docs/data-sources/sample-data-sources'
+      : selectedDataSource?.pluginId && selectedDataSource.pluginId.trim() !== ''
+      ? `https://docs.tooljet.com/docs/marketplace/plugins/marketplace-plugin-${selectedDataSource?.kind}/`
+      : `https://docs.tooljet.com/docs/data-sources/${selectedDataSource?.kind}`;
+    return (
+      pluginsLoaded && (
+        <div>
+          <Modal
+            show={this.props.showDataSourceManagerModal}
+            size={selectedDataSource ? 'lg' : 'xl'}
+            onEscapeKeyDown={this.hideModal}
+            className={selectedDataSource ? 'animation-fade' : 'select-datasource-list-modal animation-fade'}
+            contentClassName={`${this.props.darkMode ? 'dark-theme' : ''}`}
+            animation={false}
+            onExit={this.onExit}
+            container={this.props.container}
+            {...this.props.modalProps}
+          >
+            <Modal.Header className={'d-block'}>
+              <div className="d-flex">
+                {selectedDataSource && this.props.showBackButton && (
+                  <div
+                    className={`back-btn me-3 mt-3 ${this.props.darkMode ? 'dark' : ''}`}
+                    role="button"
+                    onClick={() => this.setState({ selectedDataSource: false }, () => this.onExit())}
+                  >
+                    <img
+                      data-cy="button-back-ds-connection-modal"
+                      className="m-0"
+                      src="assets/images/icons/back.svg"
+                      width="30"
+                      height="30"
+                    />
+                  </div>
+                )}
+                <Modal.Title className="mt-3">
+                  {selectedDataSource && !isSampleDb ? (
+                    <div className="row selected-ds">
+                      {getSvgIcon(dataSourceMeta?.kind?.toLowerCase(), 35, 35, selectedDataSourceIcon)}
+                      <div className="input-icon" style={{ width: '160px' }}>
+                        <input
+                          type="text"
+                          onChange={(e) => this.onNameChanged(e.target.value)}
+                          className="form-control-plaintext form-control-plaintext-sm color-slate12"
+                          value={decodeEntities(selectedDataSource.name)}
+                          style={{ width: '160px' }}
+                          data-cy="data-source-name-input-filed"
+                          autoFocus
+                          autoComplete="off"
                         />
-                      </svg>
+                        {!this.props.isEditing && (
+                          <span className="input-icon-addon">
+                            <img src="assets/images/icons/edit-source.svg" width="12" height="12" />
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="col" style={{ maxWidth: '480px' }}>
-                      <p>Please white-list our IP address if the data source is not publicly accessible.</p>
+                  ) : (
+                    <div className="row">
+                      <div className="col-md-2">
+                        <SolidIcon name="tooljet" />
+                      </div>
+                      <div className="col-md-10"> Sample data source</div>
                     </div>
-                    <div className="col-auto">
-                      {isCopied ? (
-                        <center className="my-2">
-                          <span className="copied">Copied</span>
-                        </center>
-                      ) : (
-                        <CopyToClipboard
-                          text={config.SERVER_IP}
-                          onCopy={() => {
-                            this.setState({ isCopied: true });
-                          }}
-                        >
-                          <button type="button" className={`copy-button ${this.props.darkMode && 'dark-button'}`}>
-                            <svg
-                              width="15"
-                              height="18"
-                              viewBox="0 0 15 18"
-                              fill="none"
-                              xmlns="http://www.w3.org/2000/svg"
-                            >
-                              <path
-                                d="M10.5 15.6667H2.16667V4.83334C2.16667 4.37501 1.79167 4.00001 1.33333 4.00001C0.875 4.00001 0.5 4.37501 0.5 4.83334V15.6667C0.5 16.5833 1.25 17.3333 2.16667 17.3333H10.5C10.9583 17.3333 11.3333 16.9583 11.3333 16.5C11.3333 16.0417 10.9583 15.6667 10.5 15.6667ZM14.6667 12.3333V2.33334C14.6667 1.41667 13.9167 0.666672 13 0.666672H5.5C4.58333 0.666672 3.83333 1.41667 3.83333 2.33334V12.3333C3.83333 13.25 4.58333 14 5.5 14H13C13.9167 14 14.6667 13.25 14.6667 12.3333ZM13 12.3333H5.5V2.33334H13V12.3333Z"
-                                fill="currentColor"
-                              />
-                            </svg>
-                            Copy
-                          </button>
-                        </CopyToClipboard>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                  )}
+                  {!selectedDataSource && (
+                    <span className="" data-cy="title-add-new-datasource">
+                      {this.props.t('editor.queryManager.dataSourceManager.addNewDataSource', 'Add new datasource')}
+                    </span>
+                  )}
+                </Modal.Title>
+                {!this.props.isEditing && (
+                  <span
+                    data-cy="button-close-ds-connection-modal"
+                    className={`close-btn mx-4 mt-3 ${this.props.darkMode ? 'dark' : ''}`}
+                    onClick={() => this.hideModal()}
+                  >
+                    <SolidIcon name="remove" width="20" fill={'var(--slate12)'} />
+                  </span>
+                )}
               </div>
-
-              {connectionTestError && (
-                <div className="row w-100">
-                  <div className="alert alert-danger" role="alert">
-                    <div className="text-muted">{connectionTestError.message}</div>
-                  </div>
-                </div>
+              {this.renderEnvironmentsTab(selectedDataSource)}
+            </Modal.Header>
+            <Modal.Body style={sampleDBmodalBodyStyle}>
+              {selectedDataSource && !isSampleDb ? (
+                <div>{this.renderSourceComponent(selectedDataSource.kind, isPlugin)}</div>
+              ) : (
+                selectedDataSource && isSampleDb && <div>{this.renderSampleDBModal()}</div>
               )}
+              {!selectedDataSource && this.segregateDataSources(this.state.suggestingDatasources, this.props.darkMode)}
+            </Modal.Body>
 
-              <div className="col">
-                <small>
+            {selectedDataSource && !dataSourceMeta.customTesting && (
+              <Modal.Footer style={sampleDBmodalFooterStyle} className="modal-footer-class">
+                {selectedDataSource && !isSampleDb && (
+                  <div className="row w-100">
+                    <div className="card-body datasource-footer-info">
+                      <div className="row">
+                        <div className="col-1">
+                          <SolidIcon name="information" fill="#3E63DD" />
+                        </div>
+
+                        <div className="col" style={{ maxWidth: '480px' }}>
+                          <p data-cy="white-list-ip-text" className="tj-text">
+                            {this.props.t(
+                              'editor.queryManager.dataSourceManager.whiteListIP',
+                              'Please white-list our IP address if the data source is not publicly accessible.'
+                            )}
+                          </p>
+                        </div>
+
+                        <div className="col-auto">
+                          {isCopied ? (
+                            <center className="my-2">
+                              <span className="copied" data-cy="label-ip-copied">
+                                {this.props.t('editor.queryManager.dataSourceManager.copied', 'Copied')}
+                              </span>
+                            </center>
+                          ) : (
+                            <CopyToClipboard
+                              text={config.SERVER_IP}
+                              onCopy={() => {
+                                this.setState({ isCopied: true });
+                              }}
+                            >
+                              <ButtonSolid
+                                type="button"
+                                className={`datasource-copy-button`}
+                                data-cy="button-copy-ip"
+                                variant="tertiary"
+                                leftIcon="copy"
+                                iconWidth="12"
+                              >
+                                {this.props.t('editor.queryManager.dataSourceManager.copy', 'Copy')}
+                              </ButtonSolid>
+                            </CopyToClipboard>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {connectionTestError && (
+                  <div className="row w-100">
+                    <div className="alert alert-danger" role="alert">
+                      <div className="text-muted" data-cy="connection-alert-text">
+                        {connectionTestError.message}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="col">
+                  <SolidIcon name="logs" fill="#3E63DD" width="20" style={{ marginRight: '8px' }} />
                   <a
-                    className="color-primary"
-                    href={`https://docs.tooljet.io/docs/data-sources/${selectedDataSource.kind}`}
+                    className="color-primary tj-docs-link tj-text-sm"
+                    href={docLink}
                     target="_blank"
                     rel="noreferrer"
+                    data-cy="link-read-documentation"
                   >
-                    Read documentation
+                    {this.props.t('globals.readDocumentation', 'Read documentation')}
                   </a>
-                </small>
-              </div>
-              <div className="col-auto">
-                <TestConnection
-                  kind={selectedDataSource.kind}
-                  options={options}
-                  onConnectionTestFailed={this.onConnectionTestFailed}
-                  darkMode={this.props.darkMode}
-                />
-              </div>
-              <div className="col-auto">
-                <Button
-                  className={`m-2 ${isSaving ? 'btn-loading' : ''}`}
-                  disabled={isSaving}
-                  variant="primary"
-                  onClick={this.createDataSource}
+                </div>
+                <div
+                  className={!isSampleDb ? `col-auto` : 'col-auto test-connection-sample-db'}
+                  data-cy="button-test-connection"
                 >
-                  {'Save'}
-                </Button>
-              </div>
-            </Modal.Footer>
-          )}
+                  <TestConnection
+                    kind={selectedDataSource.kind}
+                    pluginId={selectedDataSource?.pluginId ?? this.state.selectedDataSourcePluginId}
+                    options={options}
+                    onConnectionTestFailed={this.onConnectionTestFailed}
+                    darkMode={this.props.darkMode}
+                    environmentId={this.props.currentEnvironment?.id}
+                  />
+                </div>
+                {!isSampleDb && (
+                  <div className="col-auto" data-cy="db-connection-save-button">
+                    <ButtonSolid
+                      className={`m-2 ${isSaving ? 'btn-loading' : ''}`}
+                      isLoading={isSaving}
+                      disabled={isSaving || this.props.isVersionReleased || isSaveDisabled}
+                      variant="primary"
+                      onClick={this.createDataSource}
+                      leftIcon="floppydisk"
+                      fill={this.props.darkMode && this.props.isVersionReleased ? '#4c5155' : '#FDFDFE'}
+                    >
+                      {this.props.t('globals.save', 'Save')}
+                    </ButtonSolid>
+                  </div>
+                )}
+              </Modal.Footer>
+            )}
 
-          {!dataSourceMeta?.hideSave && selectedDataSource && dataSourceMeta.customTesting && (
-            <Modal.Footer>
-              <div className="col">
-                <small>
+            {!dataSourceMeta?.hideSave && selectedDataSource && dataSourceMeta.customTesting && (
+              <Modal.Footer>
+                <div className="col">
+                  <SolidIcon name="logs" fill="#3E63DD" width="20" style={{ marginRight: '8px' }} />
                   <a
-                    href={`https://docs.tooljet.io/docs/data-sources/${selectedDataSource.kind}`}
+                    className="color-primary tj-docs-link tj-text-sm"
+                    href={
+                      selectedDataSource?.pluginId && selectedDataSource.pluginId.trim() !== ''
+                        ? `https://docs.tooljet.com/docs/marketplace/plugins/marketplace-plugin-${selectedDataSource.kind}/`
+                        : `https://docs.tooljet.com/docs/data-sources/${selectedDataSource.kind}`
+                    }
                     target="_blank"
                     rel="noreferrer"
                   >
-                    Read documentation
+                    {this.props.t('globals.readDocumentation', 'Read documentation')}
                   </a>
-                </small>
-              </div>
-              <div className="col-auto">
-                <Button className="m-2" disabled={isSaving} variant="primary" onClick={this.createDataSource}>
-                  {isSaving ? 'Saving...' : 'Save'}
-                </Button>
-              </div>
-            </Modal.Footer>
-          )}
-        </Modal>
-      </div>
+                </div>
+                <div className="col-auto">
+                  <ButtonSolid
+                    leftIcon="floppydisk"
+                    fill={'#FDFDFE'}
+                    className="m-2"
+                    disabled={isSaving || this.props.isVersionReleased || isSaveDisabled}
+                    variant="primary"
+                    onClick={this.createDataSource}
+                  >
+                    {isSaving
+                      ? this.props.t('editor.queryManager.dataSourceManager.saving' + '...', 'Saving...')
+                      : this.props.t('globals.save', 'Save')}
+                  </ButtonSolid>
+                </div>
+              </Modal.Footer>
+            )}
+          </Modal>
+          <ConfirmDialog
+            title={'Add datasource'}
+            show={dataSourceConfirmModalProps.isOpen}
+            message={`Do you want to add ${dataSourceConfirmModalProps?.dataSource?.name}?`}
+            onConfirm={() => createSelectedDataSource(dataSourceConfirmModalProps.dataSource)}
+            onCancel={this.resetDataSourceConfirmModal}
+            confirmButtonText={'Add datasource'}
+            confirmButtonType="primary"
+            cancelButtonType="tertiary"
+            backdropClassName="datasource-selection-confirm-backdrop"
+            confirmButtonLoading={addingDataSource}
+          />
+        </div>
+      )
     );
   }
 }
@@ -690,6 +1043,7 @@ const EmptyStateContainer = ({
   darkMode,
   placeholder,
 }) => {
+  const { t } = useTranslation();
   const [inputValue, set] = React.useState(() => '');
 
   const [status, setStatus] = React.useState(false);
@@ -706,17 +1060,26 @@ const EmptyStateContainer = ({
 
   return (
     <div className="empty">
-      {queryString && !suggestionUI && <h3>No results for &quot;{queryString} &quot;</h3>}
+      {queryString && !suggestionUI && (
+        <h3>
+          {t(
+            `editor.queryManager.dataSourceManager.noResultsFor + "${queryString}"`,
+            `No results for "${queryString}"`
+          )}
+        </h3>
+      )}
       <center className={`empty-results ${suggestionUI ? 'suggestionUI-results' : ''}`}>
-        <img src="/assets/images/icons/no-results.svg" width="150" height="150" />
+        <img src="assets/images/icons/no-results.svg" width="150" height="150" />
         {status ? (
           <div>
-            <p className="text-success mt-2">Thank you, we&apos;ve taken a note of that!</p>
+            <p className="text-success mt-2">
+              {t('editor.queryManager.dataSourceManager.noteTaken', `Thank you, we've taken a note of that!`)}
+            </p>
             <button
               className={`datasource-modal-button ${darkMode && 'dark-button'}`}
               onClick={handleBackToAllDatasources}
             >
-              {'Go to all Datasources'}
+              {t('editor.queryManager.dataSourceManager.goToAllDatasources', 'Go to all Datasources')}
             </button>
           </div>
         ) : (
@@ -729,12 +1092,17 @@ const EmptyStateContainer = ({
                   value={inputValue}
                   placeholder={placeholder}
                   onChange={(e) => set(e.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      handleSend();
+                    }
+                  }}
                 />
               </div>
             </div>
             <div className="col-auto">
-              <Button className="mt-2" variant="primary" onClick={handleSend}>
-                {'Send'}
+              <Button className="mt-2" disabled={!inputValue.length} variant="primary" onClick={handleSend}>
+                {t('editor.queryManager.dataSourceManager.send', 'Send')}
               </Button>
             </div>
           </div>
@@ -744,9 +1112,9 @@ const EmptyStateContainer = ({
   );
 };
 
-const SearchBoxContainer = ({ onChange, onClear, queryString, activeDatasourceList }) => {
+const SearchBoxContainer = ({ onChange, onClear, queryString, activeDatasourceList, dataCy, scope }) => {
   const [searchText, setSearchText] = React.useState(queryString ?? '');
-
+  const { t } = useTranslation();
   const handleChange = (e) => {
     setSearchText(e.target.value);
     onChange(e.target.value, activeDatasourceList);
@@ -769,17 +1137,24 @@ const SearchBoxContainer = ({ onChange, onClear, queryString, activeDatasourceLi
     if (queryString === null) {
       setSearchText('');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryString]);
   React.useEffect(() => {
     if (searchText === '') {
       onClear();
     }
+    let element = document.querySelector('.input-icon .form-control:not(:first-child)');
+
+    if (scope === 'global') {
+      element = document.querySelector('.input-icon .form-control');
+    }
+
     if (searchText) {
-      document.querySelector('.input-icon .form-control:not(:first-child)').style.paddingLeft = '0.5rem';
+      element.style.paddingLeft = '0.5rem';
     }
 
     return () => {
-      document.querySelector('.input-icon .form-control:not(:first-child)').style.paddingLeft = '2.5rem';
+      element.style.paddingLeft = '2.5rem';
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchText]);
@@ -807,6 +1182,15 @@ const SearchBoxContainer = ({ onChange, onClear, queryString, activeDatasourceLi
             </svg>
           </span>
         )}
+        <input
+          type="text"
+          value={searchText}
+          onChange={handleChange}
+          className="form-control"
+          placeholder={t('globals.search', 'Search')}
+          autoFocus
+          data-cy={dataCy}
+        />
         {searchText.length > 0 && (
           <span className="clear-icon mt-2" onClick={clearSearch}>
             <svg
@@ -827,10 +1211,20 @@ const SearchBoxContainer = ({ onChange, onClear, queryString, activeDatasourceLi
             </svg>
           </span>
         )}
-        <input type="text" value={searchText} onChange={handleChange} className="form-control" placeholder="Search" />
       </div>
     </div>
   );
 };
 
-export { DataSourceManager };
+const withStore = (Component) => (props) => {
+  const { setGlobalDataSourceStatus } = useDataSourcesStore(
+    (state) => ({
+      setGlobalDataSourceStatus: state.actions.setGlobalDataSourceStatus,
+    }),
+    shallow
+  );
+
+  return <Component {...props} setGlobalDataSourceStatus={setGlobalDataSourceStatus} />;
+};
+
+export const DataSourceManager = withTranslation()(withRouter(withStore(DataSourceManagerComponent)));

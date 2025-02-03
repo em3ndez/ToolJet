@@ -4,10 +4,20 @@ import {
   getCachedConnection,
   QueryService,
   QueryResult,
-} from "@tooljet-plugins/common";
+} from '@tooljet-plugins/common';
 
-const { Pool } = require("pg");
-import { SourceOptions, QueryOptions } from "./types";
+const { Pool } = require('pg');
+import { SourceOptions, QueryOptions } from './types';
+
+function isEmpty(value: number | null | undefined | string) {
+  return (
+    value === undefined ||
+    value === null ||
+    !isNaN(value as number) ||
+    (typeof value === 'object' && Object.keys(value).length === 0) ||
+    (typeof value === 'string' && value.trim().length === 0)
+  );
+}
 
 export default class PostgresqlQueryService implements QueryService {
   private static _instance: PostgresqlQueryService;
@@ -21,27 +31,34 @@ export default class PostgresqlQueryService implements QueryService {
     return PostgresqlQueryService._instance;
   }
 
+  connectionOptions(sourceOptions: SourceOptions) {
+    const _connectionOptions = (sourceOptions.connection_options || []).filter((o) => {
+      return o.some((e) => !isEmpty(e));
+    });
+
+    const connectionOptions = Object.fromEntries(_connectionOptions);
+    Object.keys(connectionOptions).forEach((key) =>
+      connectionOptions[key] === '' ? delete connectionOptions[key] : {}
+    );
+
+    return connectionOptions;
+  }
+
   async run(
     sourceOptions: SourceOptions,
     queryOptions: QueryOptions,
     dataSourceId: string,
     dataSourceUpdatedAt: string
   ): Promise<QueryResult> {
-    const pool = await this.getConnection(
-      sourceOptions,
-      {},
-      true,
-      dataSourceId,
-      dataSourceUpdatedAt
-    );
+    const pool = await this.getConnection(sourceOptions, {}, true, dataSourceId, dataSourceUpdatedAt);
 
     let result = {
       rows: [],
     };
-    let query = "";
+    let query = '';
 
-    if (queryOptions.mode === "gui") {
-      if (queryOptions.operation === "bulk_update_pkey") {
+    if (queryOptions.mode === 'gui') {
+      if (queryOptions.operation === 'bulk_update_pkey') {
         query = await this.buildBulkUpdateQuery(queryOptions);
       }
     } else {
@@ -51,20 +68,18 @@ export default class PostgresqlQueryService implements QueryService {
     result = await pool.query(query);
 
     return {
-      status: "ok",
+      status: 'ok',
       data: result.rows,
     };
   }
 
-  async testConnection(
-    sourceOptions: SourceOptions
-  ): Promise<ConnectionTestResult> {
+  async testConnection(sourceOptions: SourceOptions): Promise<ConnectionTestResult> {
     const pool = await this.getConnection(sourceOptions, {}, false);
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const result = await pool.query("SELECT version();");
+    const result = await pool.query('SELECT version();');
 
     return {
-      status: "ok",
+      status: 'ok',
     };
   }
 
@@ -77,10 +92,20 @@ export default class PostgresqlQueryService implements QueryService {
       port: sourceOptions.port,
       statement_timeout: 10000,
       connectionTimeoutMillis: 10000,
+      ...this.connectionOptions(sourceOptions),
     };
 
-    if (sourceOptions.ssl_enabled)
-      poolConfig["ssl"] = { rejectUnauthorized: false };
+    const sslObject = { rejectUnauthorized: (sourceOptions.ssl_certificate ?? 'none') != 'none' };
+    if (sourceOptions.ssl_certificate === 'ca_certificate') {
+      sslObject['ca'] = sourceOptions.ca_cert;
+    }
+    if (sourceOptions.ssl_certificate === 'self_signed') {
+      sslObject['ca'] = sourceOptions.root_cert;
+      sslObject['key'] = sourceOptions.client_key;
+      sslObject['cert'] = sourceOptions.client_cert;
+    }
+
+    if (sourceOptions.ssl_enabled) poolConfig['ssl'] = sslObject;
 
     return new Pool(poolConfig);
   }
@@ -93,10 +118,7 @@ export default class PostgresqlQueryService implements QueryService {
     dataSourceUpdatedAt?: string
   ): Promise<any> {
     if (checkCache) {
-      let connection = await getCachedConnection(
-        dataSourceId,
-        dataSourceUpdatedAt
-      );
+      let connection = await getCachedConnection(dataSourceId, dataSourceUpdatedAt);
 
       if (connection) {
         return connection;
@@ -111,23 +133,20 @@ export default class PostgresqlQueryService implements QueryService {
   }
 
   async buildBulkUpdateQuery(queryOptions: any): Promise<string> {
-    let queryText = "";
+    let queryText = '';
 
-    const tableName = queryOptions["table"];
-    const primaryKey = queryOptions["primary_key_column"];
-    const records = queryOptions["records"];
+    const tableName = queryOptions['table'];
+    const primaryKey = queryOptions['primary_key_column'];
+    const records = queryOptions['records'];
 
     for (const record of records) {
-      const primaryKeyValue =
-        typeof record[primaryKey] === "string"
-          ? `'${record[primaryKey]}'`
-          : record[primaryKey];
+      const primaryKeyValue = typeof record[primaryKey] === 'string' ? `'${record[primaryKey]}'` : record[primaryKey];
 
       queryText = `${queryText} UPDATE ${tableName} SET`;
 
       for (const key of Object.keys(record)) {
         if (key !== primaryKey) {
-          queryText = ` ${queryText} ${key} = '${record[key]}',`;
+          queryText = ` ${queryText} ${key} = ${record[key] === null ? null : `'${record[key]}'`},`;
         }
       }
 

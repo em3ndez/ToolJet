@@ -1,41 +1,64 @@
 import config from 'config';
 
 class WebSocketConnection {
-  constructor(appId) {
-    this.socket = new WebSocket(`${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${this.getWebsocketUrl()}`);
+  static instance;
+  static appId;
 
+  constructor(appId) {
+    if (WebSocketConnection.instance && WebSocketConnection.appId === appId) {
+      return WebSocketConnection.instance;
+    }
+
+    this.socket = new WebSocket(`${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${this.getWebsocketUrl()}`);
     this.addListeners(appId);
+
+    WebSocketConnection.instance = this;
   }
 
   getWebsocketUrl() {
     const re = /https?:\/\//g;
-    if (re.test(config.apiUrl)) return config.apiUrl.replace(/(^\w+:|^)\/\//, '').replace('/api', '');
+    const isSecure = re.test(config.apiUrl);
 
-    return window.location.host;
+    let url;
+    if (isSecure) {
+      url = config.apiUrl.replace(/(^\w+:|^)\/\//, '').replace('/api', '/ws');
+    } else {
+      url = `${window.location.host}${config.apiUrl.replace(/(^\w+:|^)\/\//, '').replace('/api', '/ws')}`;
+    }
+
+    return url;
   }
 
   addListeners(appId) {
     // Connection opened
     this.socket.addEventListener('open', (event) => {
-      console.log('connection established', event);
-      const currentUser = JSON.parse(localStorage.getItem('currentUser'));
+      // console.log('connection established', event);
 
+      //TODO: verify if the socket functionality is working or not
       this.socket.send(
         JSON.stringify({
           event: 'authenticate',
-          data: currentUser.auth_token,
         })
       );
+
+      this.socket.send(
+        JSON.stringify({
+          event: 'subscribe',
+          data: appId,
+        })
+      );
+
+      this.appId = appId;
     });
 
     // Connection closed
     this.socket.addEventListener('close', (event) => {
-      console.log('connection closed', event);
+      // console.log('connection closed', event);
     });
 
     // Listen for possible errors
     this.socket.addEventListener('error', (event) => {
-      console.log('WebSocket error: ', event);
+      // console.log('WebSocket error: ', event);
     });
   }
 }

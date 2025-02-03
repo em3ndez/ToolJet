@@ -7,11 +7,13 @@ import {
   ManyToOne,
   JoinColumn,
   BaseEntity,
+  Unique,
 } from 'typeorm';
 import { Organization } from './organization.entity';
 import { User } from './user.entity';
 
 @Entity({ name: 'organization_users' })
+@Unique(['userId', 'organizationId'])
 export class OrganizationUser extends BaseEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -22,11 +24,17 @@ export class OrganizationUser extends BaseEntity {
   @Column({ type: 'enum', enumName: 'status', enum: ['invited', 'active', 'archived'] })
   status: string;
 
+  @Column({ type: 'enum', enumName: 'source', enum: ['signup', 'invite'] })
+  source: string;
+
   @Column({ name: 'organization_id' })
   organizationId: string;
 
   @Column({ name: 'user_id' })
   userId: string;
+
+  @Column({ name: 'invitation_token' })
+  invitationToken: string;
 
   @CreateDateColumn({ default: () => 'now()', name: 'created_at' })
   createdAt: Date;

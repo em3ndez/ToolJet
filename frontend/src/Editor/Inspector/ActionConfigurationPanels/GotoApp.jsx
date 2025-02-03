@@ -1,12 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import SelectSearch, { fuzzySearch } from 'react-select-search';
-import { CodeHinter } from '../../CodeBuilder/CodeHinter';
+import Select from '@/_ui/Select';
+import defaultStyles from '@/_ui/Select/styles';
+import { useTranslation } from 'react-i18next';
+import CodeHinter from '@/Editor/CodeEditor';
 
-export function GotoApp({ getAllApps, currentState, event, handlerChanged, eventIndex }) {
+export function GotoApp({ getAllApps, event, handlerChanged, eventIndex, darkMode }) {
+  const [isLoading, setIsLoading] = useState(true);
+  const [appOptions, setAppOptions] = useState([]);
+
   const queryParamChangeHandler = (index, key, value) => {
     event.queryParams[index][key] = value;
     handlerChanged(eventIndex, 'queryParams', event.queryParams);
   };
+  const { t } = useTranslation();
 
   const addQueryParam = () => {
     if (!event.queryParams) {
@@ -34,18 +40,42 @@ export function GotoApp({ getAllApps, currentState, event, handlerChanged, event
     }
   });
 
+  useEffect(() => {
+    getAllApps()
+      .then((apps) => {
+        setAppOptions(apps);
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const styles = {
+    ...defaultStyles(darkMode),
+    menuPortal: (provided) => ({ ...provided, zIndex: 9999 }),
+    menuList: (base) => ({
+      ...base,
+    }),
+  };
+
   return (
-    <div className="p-1">
+    <div className="p-1 go-to-app">
       <label className="form-label mt-1">App</label>
-      <SelectSearch
-        options={getAllApps()}
+      <Select
+        options={appOptions}
         search={true}
         value={event.slug}
         onChange={(value) => {
           handlerChanged(eventIndex, 'slug', value);
         }}
-        filterOptions={fuzzySearch}
-        placeholder="Select.."
+        isDisabled={isLoading}
+        isLoading={isLoading}
+        placeholder={t('globals.select', 'Select') + '...'}
+        styles={styles}
+        useMenuPortal={false}
+        className={`${darkMode ? 'select-search-dark' : 'select-search'}`}
+        useCustomStyles={true}
       />
       <label className="form-label mt-2">Query params</label>
 
@@ -55,22 +85,16 @@ export function GotoApp({ getAllApps, currentState, event, handlerChanged, event
           <div key={index} className="row input-group mt-1">
             <div className="col">
               <CodeHinter
-                currentState={currentState}
-                initialValue={event.queryParams[index][0]}
+                type="basic"
+                initialValue={event?.queryParams?.[index]?.[0]}
                 onChange={(value) => queryParamChangeHandler(index, 0, value)}
-                mode="javascript"
-                className="form-control codehinter-query-editor-input"
-                height={30}
               />
             </div>
             <div className="col">
               <CodeHinter
-                currentState={currentState}
-                initialValue={event.queryParams[index][1]}
+                type="basic"
+                initialValue={event?.queryParams?.[index]?.[1]}
                 onChange={(value) => queryParamChangeHandler(index, 1, value)}
-                mode="javascript"
-                className="form-control codehinter-query-editor-input"
-                height={30}
               />
             </div>
             <span className="btn-sm col-auto my-1" role="button" onClick={() => deleteQueryParam(index)}>

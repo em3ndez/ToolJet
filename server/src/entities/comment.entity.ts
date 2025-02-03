@@ -8,6 +8,8 @@ import {
   JoinColumn,
   BaseEntity,
   ManyToOne,
+  ManyToMany,
+  JoinTable,
 } from 'typeorm';
 import { User } from './user.entity';
 import { Thread } from './thread.entity';
@@ -42,11 +44,25 @@ export class Comment extends BaseEntity {
   @UpdateDateColumn({ default: () => 'now()', name: 'updated_at' })
   updatedAt: Date;
 
-  @OneToOne(() => User, (user) => user.id, { eager: true })
+  @OneToOne(() => User, (user) => user.id)
   @JoinColumn({ name: 'user_id' })
   user: User;
 
-  @OneToOne(() => Thread, (thread) => thread.id)
+  @ManyToMany(() => User, (user) => user.id, {
+    cascade: true,
+  })
+  @JoinTable({
+    name: 'comment_users',
+    joinColumn: {
+      name: 'comment_id',
+    },
+    inverseJoinColumn: {
+      name: 'user_id',
+    },
+  })
+  mentionedUsers: User[];
+
+  @ManyToOne(() => Thread, (thread) => thread.id, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'thread_id' })
   thread: Thread;
 

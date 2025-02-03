@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { ListGroup } from 'react-bootstrap';
+import { useTranslation } from 'react-i18next';
+import FolderList from '@/_ui/FolderList/FolderList';
 
 export default function AppList(props) {
   const { apps, selectedApp, selectApp } = props;
@@ -20,9 +22,15 @@ export default function AppList(props) {
           <div></div>
         )}
         {filteredApps.map((app) => (
-          <ListGroup.Item key={app.id} action active={app.id === selectedApp?.id} onClick={() => selectApp(app)}>
+          <FolderList
+            key={app.id}
+            action
+            selectedItem={app.id === selectedApp?.id}
+            onClick={() => selectApp(app)}
+            dataCy={`${String(app.id).toLowerCase().replace(/\s+/g, '-')}`}
+          >
             {app.name}
-          </ListGroup.Item>
+          </FolderList>
         ))}
       </ListGroup>
     </div>
@@ -31,6 +39,7 @@ export default function AppList(props) {
 
 const SearchBoxContainer = ({ onChange, queryString }) => {
   const [searchText, setSearchText] = React.useState(queryString ?? '');
+  const { t } = useTranslation();
 
   const handleChange = (e) => {
     setSearchText(e.target.value);
@@ -55,13 +64,15 @@ const SearchBoxContainer = ({ onChange, queryString }) => {
     }
 
     return () => {
-      document.querySelector('.template-search-box .input-icon .form-control:not(:first-child)').style.paddingLeft =
-        '2.5rem';
+      if (document.querySelector('.template-search-box .input-icon .form-control:not(:first-child)')) {
+        document.querySelector('.template-search-box .input-icon .form-control:not(:first-child)').style.paddingLeft =
+          '2.5rem';
+      }
     };
   }, [searchText]);
 
   return (
-    <div className="template-search-box">
+    <div className="template-search-box" data-cy="template-search-box">
       <div style={{ height: '36px' }} className="input-icon d-flex">
         {searchText.length === 0 && (
           <span className="search-icon mt-2 mx-2">
@@ -103,7 +114,14 @@ const SearchBoxContainer = ({ onChange, queryString }) => {
             </svg>
           </span>
         )}
-        <input type="text" value={searchText} onChange={handleChange} className="form-control" placeholder="Search" />
+        <input
+          type="text"
+          value={searchText}
+          onChange={handleChange}
+          className="form-control"
+          data-cy="search-input-field"
+          placeholder={t('globals.search', 'Search')}
+        />
       </div>
     </div>
   );

@@ -6,20 +6,33 @@ import {
   UpdateDateColumn,
   OneToMany,
   JoinColumn,
+  BaseEntity,
 } from 'typeorm';
 import { GroupPermission } from './group_permission.entity';
-import { User } from './user.entity';
+import { SSOConfigs } from './sso_config.entity';
+import { OrganizationUser } from './organization_user.entity';
+import { InternalTable } from './internal_table.entity';
+import { AppEnvironment } from './app_environments.entity';
 
 @Entity({ name: 'organizations' })
-export class Organization {
+export class Organization extends BaseEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ name: 'name' })
+  @Column({ name: 'name', unique: true })
   name: string;
+
+  @Column({ name: 'slug', unique: true })
+  slug: string;
 
   @Column({ name: 'domain' })
   domain: string;
+
+  @Column({ name: 'enable_sign_up' })
+  enableSignUp: boolean;
+
+  @Column({ name: 'inherit_sso' })
+  inheritSSO: boolean;
 
   @CreateDateColumn({ default: () => 'now()', name: 'created_at' })
   createdAt: Date;
@@ -31,7 +44,16 @@ export class Organization {
   @JoinColumn({ name: 'organization_id' })
   groupPermissions: GroupPermission[];
 
-  @OneToMany(() => User, (user) => user.organization)
+  @OneToMany(() => SSOConfigs, (ssoConfigs) => ssoConfigs.organization, { cascade: ['insert'] })
+  ssoConfigs: SSOConfigs[];
+
+  @OneToMany(() => OrganizationUser, (organizationUser) => organizationUser.organization)
+  organizationUsers: OrganizationUser[];
+
+  @OneToMany(() => AppEnvironment, (appEnvironment) => appEnvironment.organization, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'organization_id' })
-  users: User[];
+  appEnvironments: AppEnvironment[];
+
+  @OneToMany(() => InternalTable, (internalTable) => internalTable.organization)
+  internalTable: InternalTable[];
 }

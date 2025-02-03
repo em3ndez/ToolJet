@@ -5,9 +5,9 @@
   "type": "api",
   "defaults": {},
   "properties": {
-    "mode": {
-      "label": "",
-      "key": "mode",
+    "operation": {
+      "label": "Operation",
+      "key": "operation",
       "type": "dropdown-component-flip",
       "description": "Single select dropdown for mode",
       "list": [
@@ -18,6 +18,10 @@
         {
           "name": "Send message",
           "value": "send_message"
+        },
+        {
+          "name": "List messages from a channel",
+          "value": "list_messages"
         }
       ]
     },
@@ -25,14 +29,55 @@
       "channel": {
         "label": "Channel",
         "key": "channel",
+        "description": "Enter channel",
         "type": "codehinter",
-        "description": "Enter channel"
+        "lineNumbers": false,
+        "height": "36px",
+        "className": "codehinter-plugins",
+        "placeholder": "Enter channel id or user id"
       },
       "message": {
         "label": "Message",
         "key": "message",
         "type": "codehinter",
-        "description": "Enter message"
+        "lineNumbers": false,
+        "description": "Enter message",
+        "className": "codehinter-plugins",
+        "height": "150px",
+        "editorType": "extendedSingleLine",
+        "placeholder": "Enter message"
+      }
+    },
+    "list_messages": {
+      "channel": {
+        "label": "Channel",
+        "key": "channel",
+        "description": "Enter channel",
+        "type": "codehinter",
+        "lineNumbers": false,
+        "height": "36px",
+        "className": "codehinter-plugins",
+        "placeholder": "Enter channel id"
+      },
+      "limit": {
+        "label": "Limit",
+        "key": "limit",
+        "description": "Enter limit",
+        "type": "codehinter",
+        "lineNumbers": false,
+        "height": "36px",
+        "className": "codehinter-plugins",
+        "placeholder": "Enter limit"
+      },
+      "cursor": {
+        "label": "Next cursor",
+        "key": "cursor",
+        "description": "Enter next cursor",
+        "type": "codehinter",
+        "lineNumbers": false,
+        "height": "36px",
+        "className": "codehinter-plugins",
+        "placeholder": "Enter cursor"
       }
     }
   }

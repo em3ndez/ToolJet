@@ -5,8 +5,8 @@ import { Organization } from './organization.entity';
 
 @Entity({ name: 'threads' })
 export class Thread extends BaseEntity {
-  @PrimaryGeneratedColumn()
-  id: number;
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
 
   @Column({ name: 'x' })
   x: number;
@@ -29,7 +29,10 @@ export class Thread extends BaseEntity {
   @Column({ default: false, name: 'is_resolved' })
   isResolved: boolean;
 
-  @ManyToOne(() => User, (user) => user.id, { eager: true })
+  @Column({ name: 'page_id' })
+  pageId: string;
+
+  @ManyToOne(() => User, (user) => user.id)
   @JoinColumn({ name: 'user_id' })
   user: User;
 

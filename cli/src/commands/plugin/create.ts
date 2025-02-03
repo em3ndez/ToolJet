@@ -5,7 +5,7 @@ const execa = require('execa');
 const path = require('path');
 const fs = require('fs');
 const { runner } = require('hygen');
-const Logger = require('hygen/lib/logger');
+const Logger = require('hygen/dist/logger').default;
 
 export default class Create extends Command {
   static flags = {
@@ -47,14 +47,14 @@ export default class Create extends Command {
       type = responses.type;
     }
 
-    const pluginsPath = 'plugins';
+    const pluginsPath = 'marketplace';
     const docsPath = 'docs';
-    const defaultTemplates = path.join('plugins', '_templates');
+    const defaultTemplates = path.join(pluginsPath, '_templates');
 
     if (!(fs.existsSync(pluginsPath) && fs.existsSync(docsPath) && fs.existsSync(defaultTemplates))) {
       this.log(
         '\x1b[41m%s\x1b[0m',
-        'Error : plugins, docs or plugins/_templates directory missing, make sure that you are runing this command in Tooljet directory'
+        `Error : ${pluginsPath}, docs or ${pluginsPath}/_templates directory missing, make sure that you are running this command in Tooljet directory`
       );
       process.exit(1);
     }
@@ -70,13 +70,20 @@ export default class Create extends Command {
       `${name}`,
       '--plugins_path',
       `${pluginsPath}`,
-      '--docs_path',
-      `${docsPath}`,
     ];
+
+    const buffer = fs.readFileSync(path.join('server', 'src', 'assets', 'marketplace', 'plugins.json'), 'utf8');
+    const pluginsJson = JSON.parse(buffer);
+    pluginsJson.map((plugin: any) => {
+      if (plugin.id === args.plugin_name.toLowerCase()) {
+        this.log('\x1b[41m%s\x1b[0m', 'Error : Plugin id already exists');
+        process.exit(1);
+      }
+    });
 
     CliUx.ux.action.start('creating plugin');
 
-    runner(hygenArgs, {
+    await runner(hygenArgs, {
       templates: defaultTemplates,
       cwd: process.cwd(),
       logger: new Logger(console.log.bind(console)),
@@ -88,23 +95,36 @@ export default class Create extends Command {
       debug: !!process.env.DEBUG,
     });
 
-    await execa('npx', ['lerna', 'link', 'convert'], { cwd: pluginsPath });
-    CliUx.ux.action.stop();
+    const plugin = {
+      name: args.plugin_name,
+      description: `${type} plugin from ${args.plugin_name}`,
+      version: '1.0.0',
+      id: `${args.plugin_name.toLowerCase()}`,
+      author: 'Tooljet',
+      timestamp: new Date().toUTCString(),
+    };
 
-    if (flags.build) {
-      CliUx.ux.action.start('building plugins');
-      await execa.command('npm run build:plugins', { cwd: process.cwd() });
-      CliUx.ux.action.stop();
-    }
+    pluginsJson.push(plugin);
+
+    const jsonString = JSON.stringify(pluginsJson, null, 2);
+    fs.writeFileSync(path.join('server', 'src', 'assets', 'marketplace', 'plugins.json'), jsonString);
+
+    CliUx.ux.action.stop();
 
     this.log('\x1b[42m', '\x1b[30m', `Plugin: ${args.plugin_name} created successfully`, '\x1b[0m');
 
+    if (flags.build) {
+      CliUx.ux.action.start('building plugins');
+      await execa('npm', ['run', 'build', '--workspaces'], { cwd: pluginsPath });
+      CliUx.ux.action.stop();
+    }
+
     const tree = CliUx.ux.tree();
-    tree.insert('plugins');
+    tree.insert(pluginsPath);
 
     const subtree = CliUx.ux.tree();
     subtree.insert(`${args.plugin_name}`);
-    tree.nodes.plugins.insert('packages', subtree);
+    tree.nodes[pluginsPath].insert('plugins', subtree);
 
     tree.display();
   }

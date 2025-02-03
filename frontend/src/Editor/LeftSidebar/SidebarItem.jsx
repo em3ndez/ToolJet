@@ -1,43 +1,52 @@
-import React from 'react';
+import SolidIcon from '@/_ui/Icon/SolidIcons';
+import React, { forwardRef } from 'react';
 import OverlayTrigger from 'react-bootstrap/OverlayTrigger';
 import Tooltip from 'react-bootstrap/Tooltip';
+import { useTranslation } from 'react-i18next';
 
-export const LeftSidebarItem = ({
-  tip = '',
-  className,
-  icon,
-  commentBadge,
-  text,
-  onClick,
-  badge = false,
-  count,
-  ...rest
-}) => {
-  return (
-    <OverlayTrigger
-      trigger={['click', 'hover', 'focus']}
-      placement="right"
-      delay={{ show: 800, hide: 100 }}
-      overlay={<Tooltip id="button-tooltip">{tip}</Tooltip>}
-    >
-      <div>
-        <div {...rest} className={className} onClick={onClick && onClick}>
-          {icon && (
-            <img
-              className="svg-icon"
-              src={`/assets/images/icons/editor/left-sidebar/${icon}.svg`}
-              width="20"
-              height="20"
+export const LeftSidebarItem = forwardRef(
+  (
+    { tip = '', selectedSidebarItem, className, icon, commentBadge, text, onClick, badge = false, count, ...rest },
+    ref
+  ) => {
+    const { t } = useTranslation();
+    let displayIcon = icon;
+    if (icon == 'page') displayIcon = 'file01';
+    const content = (
+      <div {...rest} className={className} onClick={onClick && onClick} ref={ref}>
+        {icon && (
+          <div
+            className={`sidebar-svg-icon  position-relative ${
+              selectedSidebarItem === icon && selectedSidebarItem != 'comments' && 'sidebar-item'
+            }`}
+            data-cy={`left-sidebar-${icon.toLowerCase()}-button`}
+          >
+            <SolidIcon
+              name={displayIcon}
+              width={icon == 'settings' ? 22.4 : 20}
+              fill={selectedSidebarItem === icon ? '#3E63DD' : 'var(--slate8)'}
             />
-          )}
-          {badge && <LeftSidebarItem.Badge count={count} />}
-          {commentBadge && <LeftSidebarItem.CommentBadge />}
-          {text && text}
-        </div>
+            {commentBadge && <LeftSidebarItem.CommentBadge />}
+          </div>
+        )}
+        {badge && <LeftSidebarItem.Badge count={count} />}
+        <p>{text && t(`leftSidebar.${text}.text`, text)}</p>
       </div>
-    </OverlayTrigger>
-  );
-};
+    );
+
+    if (!tip) return content;
+    return (
+      <OverlayTrigger
+        trigger={['click', 'hover', 'focus']}
+        placement="right"
+        delay={{ show: 250, hide: 200 }}
+        overlay={<Tooltip id="button-tooltip">{t(`leftSidebar.${tip}.tip`, tip)}</Tooltip>}
+      >
+        {content}
+      </OverlayTrigger>
+    );
+  }
+);
 
 function CommentBadge() {
   return (

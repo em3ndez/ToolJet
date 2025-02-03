@@ -1,18 +1,21 @@
 import * as request from 'supertest';
 import { INestApplication } from '@nestjs/common';
 import {
-  authHeaderForUser,
   clearDB,
   createApplication,
   createUser,
   createNestAppInstance,
   createDataSource,
+  createDataQuery,
   createAppGroupPermission,
   createApplicationVersion,
+  generateAppDefaults,
+  authenticateUser,
 } from '../test.helper';
 import { Credential } from 'src/entities/credential.entity';
-import { getRepository } from 'typeorm';
+import { getManager, getRepository } from 'typeorm';
 import { GroupPermission } from 'src/entities/group_permission.entity';
+import { DataSource } from 'src/entities/data_source.entity';
 
 describe('data sources controller', () => {
   let app: INestApplication;
@@ -44,13 +47,22 @@ describe('data sources controller', () => {
       email: 'another@tooljet.io',
       groups: ['all_users', 'admin'],
     });
-    const application = await createApplication(app, {
-      name: 'name',
-      user: adminUserData.user,
-    });
-    const applicationVersion = await createApplicationVersion(app, application);
 
-    const developerUserGroup = await getRepository(GroupPermission).findOne({
+    let loggedUser = await authenticateUser(app, adminUserData.user.email);
+    adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, developerUserData.user.email);
+    developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, viewerUserData.user.email);
+    viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, anotherOrgAdminUserData.user.email);
+    anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+    const { application, appVersion: applicationVersion } = await generateAppDefaults(app, adminUserData.user, {
+      isDataSourceNeeded: false,
+      isQueryNeeded: false,
+    });
+
+    const developerUserGroup = await getRepository(GroupPermission).findOneOrFail({
       where: {
         group: 'developer',
       },
@@ -65,23 +77,21 @@ describe('data sources controller', () => {
       name: 'name',
       options: [{ key: 'foo', value: 'bar', encrypted: 'true' }],
       kind: 'postgres',
-      app_id: application.id,
       app_version_id: applicationVersion.id,
     };
 
     for (const userData of [adminUserData, developerUserData]) {
       const response = await request(app.getHttpServer())
         .post(`/api/data_sources`)
-        .set('Authorization', authHeaderForUser(userData.user))
+        .set('tj-workspace-id', userData.user.defaultOrganizationId)
+        .set('Cookie', userData['tokenCookie'])
         .send(dataSourceParams);
 
       expect(response.statusCode).toBe(201);
       expect(response.body.id).toBeDefined();
-      expect(response.body.app_id).toBe(application.id);
       expect(response.body.app_version_id).toBe(applicationVersion.id);
       expect(response.body.kind).toBe('postgres');
       expect(response.body.name).toBe('name');
-      expect(response.body.options).toBeDefined();
       expect(response.body.created_at).toBeDefined();
       expect(response.body.updated_at).toBeDefined();
     }
@@ -93,7 +103,8 @@ describe('data sources controller', () => {
     for (const userData of [anotherOrgAdminUserData, viewerUserData]) {
       const response = await request(app.getHttpServer())
         .post(`/api/data_sources`)
-        .set('Authorization', authHeaderForUser(userData.user))
+        .set('tj-workspace-id', userData.user.defaultOrganizationId)
+        .set('Cookie', userData['tokenCookie'])
         .send(dataSourceParams);
 
       expect(response.statusCode).toBe(403);
@@ -119,11 +130,22 @@ describe('data sources controller', () => {
       email: 'another@tooljet.io',
       groups: ['all_users', 'admin'],
     });
-    const application = await createApplication(app, {
-      name: 'name',
-      user: adminUserData.user,
+
+    let loggedUser = await authenticateUser(app, adminUserData.user.email);
+    adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, developerUserData.user.email);
+    developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, viewerUserData.user.email);
+    viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, anotherOrgAdminUserData.user.email);
+    anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+    const { application, dataSource } = await generateAppDefaults(app, adminUserData.user, {
+      isQueryNeeded: false,
+      dsOptions: [{ key: 'foo', value: 'bar', encrypted: 'true' }],
+      dsKind: 'postgres',
     });
-    const developerUserGroup = await getRepository(GroupPermission).findOne({
+    const developerUserGroup = await getRepository(GroupPermission).findOneOrFail({
       where: {
         group: 'developer',
       },
@@ -132,13 +154,6 @@ describe('data sources controller', () => {
       read: false,
       update: true,
       delete: false,
-    });
-    const dataSource = await createDataSource(app, {
-      name: 'name',
-      options: [{ key: 'foo', value: 'bar', encrypted: 'true' }],
-      kind: 'postgres',
-      application: application,
-      user: adminUserData.user,
     });
 
     // encrypted data source options will create credentials
@@ -151,14 +166,20 @@ describe('data sources controller', () => {
       ];
       const response = await request(app.getHttpServer())
         .put(`/api/data_sources/${dataSource.id}`)
-        .set('Authorization', authHeaderForUser(userData.user))
+        .set('tj-workspace-id', userData.user.defaultOrganizationId)
+        .set('Cookie', userData['tokenCookie'])
         .send({
           options: newOptions,
         });
 
+      const updatedDs = await getManager()
+        .createQueryBuilder(DataSource, 'data_source')
+        .innerJoinAndSelect('data_source.dataSourceOptions', 'dataSourceOptions')
+        .where('data_source.id = :dataSourceId', { dataSourceId: dataSource.id })
+        .getOneOrFail();
+
       expect(response.statusCode).toBe(200);
-      await dataSource.reload();
-      expect(dataSource.options['email']['value']).toBe(userData.user.email);
+      expect(updatedDs.dataSourceOptions[0].options['email']['value']).toBe(userData.user.email);
     }
 
     // new credentials will not be created upon data source update
@@ -172,7 +193,8 @@ describe('data sources controller', () => {
       ];
       const response = await request(app.getHttpServer())
         .put(`/api/data_sources/${dataSource.id}`)
-        .set('Authorization', authHeaderForUser(userData.user))
+        .set('tj-workspace-id', userData.user.defaultOrganizationId)
+        .set('Cookie', userData['tokenCookie'])
         .send({
           options: newOptions,
         });
@@ -196,22 +218,25 @@ describe('data sources controller', () => {
       groups: ['all_users'],
       organization: adminUserData.organization,
     });
-    const application = await createApplication(app, {
-      name: 'name',
-      user: adminUserData.user,
-    });
     const anotherOrgAdminUserData = await createUser(app, {
       email: 'another@tooljet.io',
       groups: ['all_users', 'admin'],
     });
-    await createDataSource(app, {
-      name: 'name',
-      kind: 'postgres',
-      application: application,
-      user: adminUserData.user,
+
+    let loggedUser = await authenticateUser(app, adminUserData.user.email);
+    adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, developerUserData.user.email);
+    developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, viewerUserData.user.email);
+    viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, anotherOrgAdminUserData.user.email);
+    anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+    const { application, appVersion } = await generateAppDefaults(app, adminUserData.user, {
+      isQueryNeeded: false,
     });
 
-    const allUserGroup = await getRepository(GroupPermission).findOne({
+    const allUserGroup = await getRepository(GroupPermission).findOneOrFail({
       where: {
         group: 'all_users',
         organizationId: adminUserData.organization.id,
@@ -225,8 +250,9 @@ describe('data sources controller', () => {
 
     for (const userData of [adminUserData, developerUserData, viewerUserData]) {
       const response = await request(app.getHttpServer())
-        .get(`/api/data_sources?app_id=${application.id}`)
-        .set('Authorization', authHeaderForUser(userData.user));
+        .get(`/api/data_sources?app_version_id=${appVersion.id}`)
+        .set('tj-workspace-id', userData.user.defaultOrganizationId)
+        .set('Cookie', userData['tokenCookie']);
 
       expect(response.statusCode).toBe(200);
       expect(response.body.data_sources.length).toBe(1);
@@ -234,13 +260,96 @@ describe('data sources controller', () => {
 
     // Forbidden if user of another organization
     const response = await request(app.getHttpServer())
-      .get(`/api/data_sources?app_id=${application.id}`)
-      .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user));
+      .get(`/api/data_sources?app_version_id=${appVersion.id}`)
+      .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+      .set('Cookie', anotherOrgAdminUserData['tokenCookie']);
 
     expect(response.statusCode).toBe(403);
   });
 
-  it('should be able to search data sources with application version id', async () => {
+  it('should be able to delete data sources of an app only if admin/developer of same organization', async () => {
+    const adminUserData = await createUser(app, {
+      email: 'admin@tooljet.io',
+      groups: ['all_users', 'admin'],
+    });
+    const developerUserData = await createUser(app, {
+      email: 'developer@tooljet.io',
+      groups: ['all_users', 'developer'],
+      organization: adminUserData.organization,
+    });
+    const viewerUserData = await createUser(app, {
+      email: 'viewer@tooljet.io',
+      groups: ['all_users', 'viewer'],
+      organization: adminUserData.organization,
+    });
+    const anotherOrgAdminUserData = await createUser(app, {
+      email: 'another@tooljet.io',
+      groups: ['all_users', 'admin'],
+    });
+
+    let loggedUser = await authenticateUser(app, adminUserData.user.email);
+    adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, developerUserData.user.email);
+    developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, viewerUserData.user.email);
+    viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+    loggedUser = await authenticateUser(app, anotherOrgAdminUserData.user.email);
+    anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+    const { application, appVersion } = await generateAppDefaults(app, adminUserData.user, {
+      isQueryNeeded: false,
+      isDataSourceNeeded: false,
+    });
+
+    // setup app permissions for developer
+    const developerUserGroup = await getRepository(GroupPermission).findOne({
+      where: {
+        group: 'developer',
+      },
+    });
+    await createAppGroupPermission(app, application, developerUserGroup.id, {
+      read: true,
+      update: true,
+      delete: false,
+    });
+
+    for (const userData of [adminUserData, developerUserData]) {
+      const dataSource = await createDataSource(app, {
+        name: 'name',
+        options: [{ key: 'foo', value: 'bar', encrypted: 'true' }],
+        kind: 'postgres',
+        appVersion,
+      });
+
+      const response = await request(app.getHttpServer())
+        .delete(`/api/data_sources/${dataSource.id}`)
+        .set('tj-workspace-id', userData.user.defaultOrganizationId)
+        .set('Cookie', userData['tokenCookie'])
+        .send();
+
+      expect(response.statusCode).toBe(200);
+    }
+
+    // Should not delete if viewer or if user of another org
+    for (const userData of [anotherOrgAdminUserData, viewerUserData]) {
+      const dataSource = await createDataSource(app, {
+        name: 'name',
+        options: [{ key: 'foo', value: 'bar', encrypted: 'true' }],
+        kind: 'postgres',
+        appVersion,
+      });
+
+      const response = await request(app.getHttpServer())
+        .delete(`/api/data_sources/${dataSource.id}`)
+        .set('tj-workspace-id', userData.user.defaultOrganizationId)
+        .set('Cookie', userData['tokenCookie'])
+        .send();
+
+      expect(response.statusCode).toBe(403);
+    }
+  });
+
+  it('should be able to a delete data sources from a specific version of an app', async () => {
     const adminUserData = await createUser(app, {
       email: 'admin@tooljet.io',
       groups: ['all_users', 'admin'],
@@ -249,28 +358,91 @@ describe('data sources controller', () => {
       name: 'name',
       user: adminUserData.user,
     });
-    const appVersion = await createApplicationVersion(app, application);
-    const dataSource = await createDataSource(app, {
-      name: 'name',
-      kind: 'postgres',
-      application: application,
-      user: adminUserData.user,
-      appVersion,
+
+    const appVersion1 = await createApplicationVersion(app, application);
+    const dataSource1 = await createDataSource(app, {
+      name: 'api',
+      kind: 'restapi',
+      appVersion: appVersion1,
+    });
+
+    await createDataQuery(app, {
+      dataSource: dataSource1,
+      options: {
+        method: 'get',
+        url: 'https://api.github.com/repos/tooljet/tooljet/stargazers',
+        url_params: [],
+        headers: [],
+        body: [],
+      },
+    });
+
+    const appVersion2 = await createApplicationVersion(app, application, { name: 'v2', definition: null });
+    const dataSource2 = await createDataSource(app, {
+      name: 'api2',
+      kind: 'restapi',
+      appVersion: appVersion2,
+    });
+
+    const dataSource2Temp = dataSource2;
+
+    const query2 = await createDataQuery(app, {
+      name: 'restapi2',
+      dataSource: dataSource2,
+      options: {
+        method: 'get',
+        url: 'https://api.github.com/repos/tooljet/tooljet/stargazers',
+        url_params: [],
+        headers: [],
+        body: [],
+      },
+    });
+
+    const dataQuery2Temp = query2;
+
+    const loggedUser = await authenticateUser(app, adminUserData.user.email);
+
+    const response = await request(app.getHttpServer())
+      .delete(`/api/data_sources/${dataSource1.id}`)
+      .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+      .set('Cookie', loggedUser.tokenCookie)
+      .send();
+
+    expect(response.statusCode).toBe(200);
+
+    await dataSource2.reload();
+    await query2.reload();
+
+    expect(dataSource2.id).toBe(dataSource2Temp.id);
+    expect(query2.id).toBe(dataQuery2Temp.id);
+  });
+
+  it('should be able to search data sources with application version id', async () => {
+    const adminUserData = await createUser(app, {
+      email: 'admin@tooljet.io',
+      groups: ['all_users', 'admin'],
+    });
+
+    const loggedUser = await authenticateUser(app, adminUserData.user.email);
+
+    const { dataSource } = await generateAppDefaults(app, adminUserData.user, {
+      isQueryNeeded: false,
     });
 
     let response = await request(app.getHttpServer())
-      .get(`/api/data_sources?app_id=${dataSource.appId}&app_version_id=${dataSource.appVersionId}`)
-      .set('Authorization', authHeaderForUser(adminUserData.user));
+      .get(`/api/data_sources?app_version_id=${dataSource.appVersionId}`)
+      .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+      .set('Cookie', loggedUser.tokenCookie);
 
     expect(response.statusCode).toBe(200);
     expect(response.body.data_sources.length).toBe(1);
 
     response = await request(app.getHttpServer())
-      .get(`/api/data_sources?app_id=${application.id}&app_version_id=62929ad6-11ae-4655-bb3e-2d2465b58950`)
-      .set('Authorization', authHeaderForUser(adminUserData.user));
+      .get(`/api/data_sources?app_version_id=62929ad6-11ae-4655-bb3e-2d2465b58950`)
+      .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+      .set('Cookie', loggedUser.tokenCookie);
 
-    expect(response.statusCode).toBe(200);
-    expect(response.body.data_sources.length).toBe(0);
+    expect(response.statusCode).toBe(500);
   });
 
   it('should not be able to authorize OAuth code for a REST API source if user of another organization', async () => {
@@ -282,26 +454,25 @@ describe('data sources controller', () => {
       email: 'another@tooljet.io',
       groups: ['all_users', 'admin'],
     });
-    const application = await createApplication(app, {
-      name: 'name',
-      user: adminUserData.user,
+    const { dataSource } = await generateAppDefaults(app, adminUserData.user, {
+      isQueryNeeded: false,
     });
-    const dataSource = await createDataSource(app, {
-      name: 'name',
-      options: [],
-      kind: 'restapi',
-      application: application,
-      user: adminUserData.user,
-    });
+
+    const loggedUser = await authenticateUser(app, anotherOrgAdminUserData.user.email);
 
     // Should not update if user of another org
     const response = await request(app.getHttpServer())
       .post(`/api/data_sources/${dataSource.id}/authorize_oauth2`)
-      .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user))
+      .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+      .set('Cookie', loggedUser.tokenCookie)
       .send({
         code: 'oauth-auth-code',
       });
 
-    expect(response.statusCode).toBe(403);
+    expect(response.statusCode).toBe(400);
+  });
+
+  afterAll(async () => {
+    await app.close();
   });
 });

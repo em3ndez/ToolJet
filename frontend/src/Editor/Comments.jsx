@@ -1,34 +1,24 @@
 import '@/_styles/editor/comments.scss';
-
+import { shallow } from 'zustand/shallow';
 import React from 'react';
-import { isEmpty, capitalize } from 'lodash';
-
+import { isEmpty } from 'lodash';
 import Comment from './Comment';
-import { commentsService, organizationService } from '@/_services';
+import { commentsService } from '@/_services';
+import { useAppVersionStore } from '@/_stores/appVersionStore';
+import { useAppDataStore } from '@/_stores/appDataStore';
 
-import useRouter from '@/_hooks/use-router';
-
-const Comments = ({ newThread = {}, appVersionsId, socket, canvasWidth }) => {
+const Comments = ({ newThread = {}, socket, canvasWidth, currentPageId }) => {
   const [threads, setThreads] = React.useState([]);
-  const router = useRouter();
-
-  const [users, setUsers] = React.useState([]);
-
-  React.useEffect(() => {
-    organizationService.getUsers(null).then((data) => {
-      const _users = data.users.map((u) => ({
-        id: u.id,
-        display: `${capitalize(u.first_name)} ${capitalize(u.last_name)}`,
-        email: u.email,
-        first_name: u.first_name,
-        last_name: u.last_name,
-      }));
-      setUsers(_users);
-    });
-  }, []);
+  const { appVersionsId } = useAppVersionStore((state) => ({ appVersionsId: state?.editingVersion?.id }), shallow);
+  const { appId } = useAppDataStore(
+    (state) => ({
+      appId: state?.appId,
+    }),
+    shallow
+  );
 
   async function fetchData() {
-    const { data } = await commentsService.getThreads(router.query.id, appVersionsId);
+    const { data } = await commentsService.getThreads(appId, appVersionsId);
     setThreads(data);
   }
 
@@ -52,21 +42,23 @@ const Comments = ({ newThread = {}, appVersionsId, socket, canvasWidth }) => {
 
   if (isEmpty(threads)) return null;
 
-  return threads.map((thread) => {
-    const { id } = thread;
-    return (
-      <Comment
-        key={id}
-        appVersionsId={appVersionsId}
-        fetchThreads={fetchData}
-        socket={socket}
-        threadId={id}
-        canvasWidth={canvasWidth}
-        users={users}
-        {...thread}
-      />
-    );
-  });
+  return threads
+    .filter((thread) => thread.pageId === currentPageId)
+    .map((thread) => {
+      const { id } = thread;
+      return (
+        <Comment
+          key={id}
+          appVersionsId={appVersionsId}
+          fetchThreads={fetchData}
+          socket={socket}
+          threadId={id}
+          canvasWidth={canvasWidth}
+          appId={appId}
+          {...thread}
+        />
+      );
+    });
 };
 
 export default Comments;

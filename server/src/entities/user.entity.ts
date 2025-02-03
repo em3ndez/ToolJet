@@ -7,17 +7,20 @@ import {
   BeforeInsert,
   BeforeUpdate,
   OneToMany,
-  ManyToOne,
-  JoinColumn,
   BaseEntity,
   ManyToMany,
   JoinTable,
+  OneToOne,
+  JoinColumn,
+  ManyToOne,
 } from 'typeorm';
+import { App } from './app.entity';
 import { GroupPermission } from './group_permission.entity';
-import { Organization } from './organization.entity';
 const bcrypt = require('bcrypt');
 import { OrganizationUser } from './organization_user.entity';
 import { UserGroupPermission } from './user_group_permission.entity';
+import { File } from './file.entity';
+import { Organization } from './organization.entity';
 
 @Entity({ name: 'users' })
 export class User extends BaseEntity {
@@ -41,6 +44,30 @@ export class User extends BaseEntity {
   @Column()
   email: string;
 
+  @Column({ name: 'phone_number' })
+  phoneNumber: string;
+
+  @Column({
+    type: 'enum',
+    enumName: 'status',
+    name: 'status',
+    enum: ['invited', 'verified', 'active', 'archived'],
+    default: 'invited',
+  })
+  status: string;
+
+  @Column({
+    type: 'enum',
+    enumName: 'source',
+    name: 'source',
+    enum: ['signup', 'invite', 'google', 'git', 'workspace_signup'],
+    default: 'invite',
+  })
+  source: string;
+
+  @Column({ name: 'avatar_id', nullable: true, default: null })
+  avatarId?: string;
+
   @Column({ name: 'invitation_token' })
   invitationToken: string;
 
@@ -51,16 +78,19 @@ export class User extends BaseEntity {
   password: string;
 
   @Column({ name: 'organization_id' })
-  organizationId: string;
+  defaultOrganizationId: string;
+
+  @Column({ name: 'company_name' })
+  companyName: string;
 
   @Column({ name: 'role' })
   role: string;
 
-  @Column({ name: 'sso_id' })
-  ssoId: string;
+  @Column({ name: 'company_size' })
+  companySize: string;
 
-  @Column({ name: 'sso' })
-  sso: string;
+  @Column({ name: 'password_retry_count' })
+  passwordRetryCount: number;
 
   @CreateDateColumn({ default: () => 'now()', name: 'created_at' })
   createdAt: Date;
@@ -75,6 +105,12 @@ export class User extends BaseEntity {
   @JoinColumn({ name: 'organization_id' })
   organization: Organization;
 
+  @JoinColumn({ name: 'avatar_id' })
+  @OneToOne(() => File, {
+    nullable: true,
+  })
+  avatar?: File;
+
   @ManyToMany(() => GroupPermission)
   @JoinTable({
     name: 'user_group_permissions',
@@ -85,8 +121,18 @@ export class User extends BaseEntity {
       name: 'group_permission_id',
     },
   })
-  groupPermissions: Promise<GroupPermission[]>;
+  groupPermissions: GroupPermission[];
 
   @OneToMany(() => UserGroupPermission, (userGroupPermission) => userGroupPermission.user, { onDelete: 'CASCADE' })
   userGroupPermissions: UserGroupPermission[];
+
+  @OneToMany(() => App, (app) => app.user)
+  apps: App[];
+
+  organizationId: string;
+  invitedOrganizationId: string;
+  organizationIds?: Array<string>;
+  isPasswordLogin: boolean;
+  isSSOLogin: boolean;
+  sessionId: string;
 }

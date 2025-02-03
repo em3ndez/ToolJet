@@ -1,7 +1,11 @@
 import React from 'react';
+import _ from 'lodash';
+import QueryEditor from './QueryEditor';
+import SourceEditor from './SourceEditor';
+import { deepClone } from '@/_helpers/utilities/utils.helpers';
 
-export default ({ getter, options = [], optionchanged }) => {
-  function addNewKeyValuePair() {
+export default ({ getter, options = [['', '']], optionchanged, isRenderedAsQueryEditor, workspaceConstants }) => {
+  function addNewKeyValuePair(options) {
     const newPairs = [...options, ['', '']];
     optionchanged(getter, newPairs);
   }
@@ -11,68 +15,27 @@ export default ({ getter, options = [], optionchanged }) => {
     optionchanged(getter, options);
   }
 
-  function keyValuePairValueChanged(e, keyIndex, index) {
-    if (options.length - 1 === index) {
-      setTimeout(() => {
-        addNewKeyValuePair();
-      }, 100);
+  function keyValuePairValueChanged(value, keyIndex, index) {
+    if (!isRenderedAsQueryEditor) {
+      const newOptions = deepClone(options);
+      newOptions[index][keyIndex] = value;
+      options.length - 1 === index ? addNewKeyValuePair(newOptions) : optionchanged(getter, newOptions);
+    } else {
+      options[index][keyIndex] = value;
+      optionchanged(getter, options);
     }
-    const value = e.target.value;
-    options[index][keyIndex] = value;
-    optionchanged(getter, options);
   }
 
-  return (
-    <div className="table-responsive table-no-divider">
-      <table className="table table-vcenter">
-        <thead>
-          <tr>
-            <th>Key</th>
-            <th>Value</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {options.map((option, index) => {
-            return (
-              <tr key={index}>
-                <td>
-                  <input
-                    type="text"
-                    value={option[0]}
-                    placeholder="key"
-                    autoComplete="off"
-                    className="form-control no-border"
-                    onChange={(e) => keyValuePairValueChanged(e, 0, index)}
-                  />
-                </td>
-                <td>
-                  <input
-                    type="text"
-                    value={option[1]}
-                    className="form-control no-border"
-                    placeholder="value"
-                    autoComplete="off"
-                    onChange={(e) => keyValuePairValueChanged(e, 1, index)}
-                  />
-                </td>
-                {index > 0 && (
-                  <td>
-                    <span
-                      role="button"
-                      onClick={() => {
-                        removeKeyValuePair(index);
-                      }}
-                    >
-                      x
-                    </span>
-                  </td>
-                )}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+  const commonProps = {
+    options,
+    addNewKeyValuePair,
+    removeKeyValuePair,
+    keyValuePairValueChanged,
+  };
+
+  return isRenderedAsQueryEditor ? (
+    <QueryEditor {...commonProps} />
+  ) : (
+    <SourceEditor {...commonProps} workspaceConstants={workspaceConstants} />
   );
 };

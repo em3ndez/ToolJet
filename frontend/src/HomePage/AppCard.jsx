@@ -1,11 +1,19 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import cx from 'classnames';
 import { AppMenu } from './AppMenu';
-import { history } from '@/_helpers';
 import moment from 'moment';
-import { ToolTip } from '@/_components';
+import { ToolTip } from '@/_components/index';
+import OverflowTooltip from '@/_components/OverflowTooltip';
 import useHover from '@/_hooks/useHover';
 import configs from './Configs/AppIcon.json';
+import { Link, useNavigate } from 'react-router-dom';
+import urlJoin from 'url-join';
+import { useTranslation } from 'react-i18next';
+import SolidIcon from '@/_ui/Icon/SolidIcons';
+import BulkIcon from '@/_ui/Icon/BulkIcons';
 
+import { getPrivateRoute, getSubpath } from '@/_helpers/routes';
+import { validateName, decodeEntities } from '@/_helpers/utils';
 const { defaultIcon } = configs;
 
 export default function AppCard({
@@ -13,7 +21,6 @@ export default function AppCard({
   canCreateApp,
   canDeleteApp,
   deleteApp,
-  cloneApp,
   exportApp,
   appActionModal,
   canUpdateApp,
@@ -23,7 +30,22 @@ export default function AppCard({
   const [hoverRef, isHovered] = useHover();
   const [focused, setFocused] = useState(false);
   const [isMenuOpen, setMenuOpen] = useState(false);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+  const h3Ref = useRef(null);
+  const { t } = useTranslation();
+  const navigate = useNavigate();
 
+  const cardRef = useRef();
+  const [popoverVisible, setPopoverVisible] = useState(true)
+  const options = {
+    root: null,
+    rootMargin: '0px',
+    threshold: 1.0
+  }
+  const callBackFunction = (entries) => {
+    const [entry] = entries;
+    setPopoverVisible(isMenuOpen && entry.isIntersecting)
+  }
   const onMenuToggle = useCallback(
     (status) => {
       setMenuOpen(!!status);
@@ -39,99 +61,161 @@ export default function AppCard({
     [app, appActionModal, currentFolder]
   );
 
+  const isValidSlug = (slug) => {
+    const validate = validateName(slug, 'slug', true, false, false, false);
+    return validate.status;
+  };
+
   useEffect(() => {
     !isMenuOpen && setFocused(!!isHovered);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHovered]);
 
-  const updated = moment(app.created_at).fromNow(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const observer = new IntersectionObserver(callBackFunction, options)
+    if (cardRef.current) observer.observe(cardRef.current)
+
+    return () => {
+      if (cardRef.current) {
+        observer.unobserve(cardRef.current)
+      }
+    }
+  }, [isHovered, cardRef, options]);
+
+  useEffect(() => {
+    const checkOverflow = () => {
+      if (h3Ref.current) {
+        setIsOverflowing(h3Ref.current.scrollWidth > h3Ref.current.clientWidth);
+      }
+    };
+
+    checkOverflow();
+    window.addEventListener('resize', checkOverflow);
+    return () => window.removeEventListener('resize', checkOverflow);
+  }, []);
+
+  const updated_at = app?.editing_version?.updated_at || app?.updated_at;
+  const updated = moment(updated_at).fromNow(true);
   const darkMode = localStorage.getItem('darkMode') === 'true';
+  const TooltipComponent = isOverflowing ? ToolTip : OverflowTooltip;
+
+  let AppIcon;
+  try {
+    AppIcon = <BulkIcon fill={'#3E63DD'} name={app?.icon || defaultIcon} />;
+  } catch (e) {
+    console.error('App icon not found', app.icon);
+  }
 
   return (
-    <div className={`app-card mb-3 p-3 pt-2${focused ? ' highlight' : ''}`} key={app.id} ref={hoverRef}>
-      <div className="row mb-3">
-        <div className="col-12 d-flex justify-content-between">
-          <div className="pt-2">
-            <div className="app-icon-main p-1">
-              <div className="app-icon p-1 d-flex">
-                <img src={`/assets/images/icons/app-icons/${app.icon || defaultIcon}.svg`} alt="Application Icon" />
+    <div className="card homepage-app-card" ref={cardRef}>
+      <div key={app?.id} ref={hoverRef} data-cy={`${app?.name.toLowerCase().replace(/\s+/g, '-')}-card`}>
+        <div className="row home-app-card-header">
+          <div className="col-12 d-flex justify-content-between">
+            <div>
+              <div className="app-icon-main">
+                <div className="app-icon d-flex" data-cy={`app-card-${app?.icon}-icon`}>
+                  {AppIcon && AppIcon}
+                </div>
               </div>
             </div>
-          </div>
-          <div className="pt-1">
-            {(canCreateApp(app) || canDeleteApp(app)) && (
-              <AppMenu
-                onMenuOpen={onMenuToggle}
-                openAppActionModal={appActionModalCallBack}
-                canCreateApp={canCreateApp()}
-                canDeleteApp={canDeleteApp(app)}
-                canUpdateApp={canUpdateApp(app)}
-                deleteApp={() => deleteApp(app)}
-                cloneApp={() => cloneApp(app)}
-                exportApp={() => exportApp(app)}
-                isMenuOpen={isMenuOpen}
-                darkMode={darkMode}
-                currentFolder={currentFolder}
-              />
-            )}
+            <div visible={focused ? true : undefined}>
+              {(canCreateApp(app) || canDeleteApp(app) || canUpdateApp(app)) && (
+                <AppMenu
+                  onMenuOpen={onMenuToggle}
+                  openAppActionModal={appActionModalCallBack}
+                  canCreateApp={canCreateApp()}
+                  canDeleteApp={canDeleteApp(app)}
+                  canUpdateApp={canUpdateApp(app)}
+                  deleteApp={() => deleteApp(app)}
+                  exportApp={() => exportApp(app)}
+                  isMenuOpen={setMenuOpen}
+                  popoverVisible={popoverVisible}
+                  setMenuOpen={setMenuOpen}
+                  darkMode={darkMode}
+                  currentFolder={currentFolder}
+                />
+              )}
+            </div>
           </div>
         </div>
-      </div>
-      <div>
-        <ToolTip message={app.name}>
-          <div className="app-title">{app.name}</div>
-        </ToolTip>
-      </div>
-      <div className="py-1">
-        <div className="app-creator py-1">{`${app.user?.first_name ? app.user.first_name : ''} ${
-          app.user?.last_name ? app.user.last_name : ''
-        }`}</div>
-        <div className="app-creation-time">
-          <ToolTip message={app.created_at && moment(app.created_at).format('dddd, MMMM Do YYYY, h:mm:ss a')}>
-            <span>{updated === 'just now' ? updated : `${updated} ago`}</span>
-          </ToolTip>
+        <div>
+          <TooltipComponent trigger={['hover']} message={app.name}>
+            <h3
+              ref={h3Ref}
+              className="app-card-name font-weight-500 tj-text-md"
+              data-cy={`${app.name.toLowerCase().replace(/\s+/g, '-')}-title`}
+            >
+              {decodeEntities(app.name)}
+            </h3>
+          </TooltipComponent>
         </div>
-      </div>
-      <div style={{ display: focused ? 'block' : 'none' }}>
-        <div className="container-fluid d-flex flex-column align-content-center px-0 mt-1">
-          <div className="row">
-            {canUpdate && (
-              <div className="col-6 pe-1">
-                <ToolTip message="Open in app builder">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-light edit-button"
-                    onClick={() => history.push(`/apps/${app.id}`)}
-                  >
-                    Edit
-                  </button>
-                </ToolTip>
-              </div>
-            )}
-            <div className={`col-${canUpdate ? '6' : '12'} ps-1`}>
-              <ToolTip
-                message={
-                  app?.current_version_id === null ? 'App does not have a deployed version' : 'Open in app viewer'
-                }
-              >
-                <span>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-primary launch-button"
-                    disabled={app?.current_version_id === null}
-                    onClick={() => {
-                      if (app?.current_version_id) {
-                        window.open(`/applications/${app.slug}`);
-                      } else {
-                        history.push(app?.current_version_id ? `/applications/${app.slug}` : '');
-                      }
-                    }}
-                  >
-                    Launch
-                  </button>
-                </span>
+        <div className="app-creation-time-container" style={{ marginBottom: '12px' }}>
+          {canUpdate && (
+            <div className="app-creation-time tj-text-xsm" data-cy="app-creation-details">
+              <ToolTip message={app.created_at && moment(app.created_at).format('dddd, MMMM Do YYYY, h:mm:ss a')}>
+                <span>{updated === 'just now' ? `Edited ${updated}` : `Edited ${updated} ago`}</span>
               </ToolTip>
             </div>
+          )}
+        </div>
+        <div className="appcard-buttons-wrap">
+          {canUpdate && (
+            <div>
+              <ToolTip message="Open in app builder">
+                <Link
+                  to={getPrivateRoute('editor', {
+                    slug: isValidSlug(app.slug) ? app.slug : app.id,
+                  })}
+                  reloadDocument
+                >
+                  <button type="button" className="tj-primary-btn edit-button tj-text-xsm" data-cy="edit-button">
+                    <SolidIcon name="editrectangle" width="14" fill={darkMode ? '#FFFFFF' : '#FDFDFE'} />
+                    &nbsp;{t('globals.edit', 'Edit')}
+                  </button>
+                </Link>
+              </ToolTip>
+            </div>
+          )}
+          <div>
+            <ToolTip
+              message={
+                app?.current_version_id === null
+                  ? t('homePage.appCard.noDeployedVersion', 'App does not have a deployed version')
+                  : t('homePage.appCard.openInAppViewer', 'Open in app viewer')
+              }
+            >
+              <button
+                type="button"
+                className={cx(
+                  ` launch-button tj-text-xsm ${app?.current_version_id === null || app?.is_maintenance_on ? 'tj-disabled-btn ' : 'tj-tertiary-btn'
+                  }`
+                )}
+                onClick={() => {
+                  if (app?.current_version_id) {
+                    window.open(
+                      urlJoin(window.public_config?.TOOLJET_HOST, getSubpath() ?? '', `/applications/${app.slug}`)
+                    );
+                  } else {
+                    navigate(app?.current_version_id ? `/applications/${app.slug}` : '');
+                  }
+                }}
+                data-cy="launch-button"
+              >
+                <SolidIcon
+                  name="rightarrrow"
+                  width="14"
+                  fill={
+                    app?.current_version_id === null || app?.is_maintenance_on
+                      ? '#4C5155'
+                      : darkMode
+                        ? '#FDFDFE'
+                        : '#11181C'
+                  }
+                />
+
+                {app?.is_maintenance_on
+                  ? t('homePage.appCard.maintenance', 'Maintenance')
+                  : t('homePage.appCard.launch', 'Launch')}
+              </button>
+            </ToolTip>
           </div>
         </div>
       </div>

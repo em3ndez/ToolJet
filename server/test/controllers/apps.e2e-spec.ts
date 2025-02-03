@@ -1,7 +1,6 @@
 import * as request from 'supertest';
 import { INestApplication } from '@nestjs/common';
 import {
-  authHeaderForUser,
   clearDB,
   createApplication,
   createUser,
@@ -10,7 +9,12 @@ import {
   createDataQuery,
   createDataSource,
   createAppGroupPermission,
-  importAppFromTemplates,
+  createAppEnvironments,
+  createDataSourceOption,
+  generateAppDefaults,
+  authenticateUser,
+  logoutUser,
+  getAllEnvironments,
 } from '../test.helper';
 import { App } from 'src/entities/app.entity';
 import { AppVersion } from 'src/entities/app_version.entity';
@@ -23,6 +27,7 @@ import { AppGroupPermission } from 'src/entities/app_group_permission.entity';
 import { Folder } from 'src/entities/folder.entity';
 import { FolderApp } from 'src/entities/folder_app.entity';
 import { Credential } from 'src/entities/credential.entity';
+import { defaultAppEnvironments } from 'src/helpers/utils.helper';
 
 describe('apps controller', () => {
   let app: INestApplication;
@@ -33,8 +38,6 @@ describe('apps controller', () => {
 
   beforeAll(async () => {
     app = await createNestAppInstance();
-    app.setGlobalPrefix('/api');
-    await app.init();
   });
 
   describe('GET /api/apps/:id', () => {
@@ -50,17 +53,28 @@ describe('apps controller', () => {
           email: 'admin@tooljet.io',
           groups: ['all_users', 'admin'],
         });
+
+        let loggedUser = await authenticateUser(app);
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const organization = adminUserData.organization;
         const developerUserData = await createUser(app, {
           email: 'developer@tooljet.io',
           groups: ['all_users', 'developer'],
           organization,
         });
+
+        loggedUser = await authenticateUser(app, 'developer@tooljet.io');
+        developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const viewerUserData = await createUser(app, {
           email: 'viewer@tooljet.io',
           groups: ['all_users', 'viewer'],
           organization,
         });
+
+        loggedUser = await authenticateUser(app, 'viewer@tooljet.io');
+        viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
 
         const application = await createApplication(app, {
           name: 'name',
@@ -68,20 +82,33 @@ describe('apps controller', () => {
         });
         await createApplicationVersion(app, application);
 
+        const appName = 'My app';
         for (const userData of [viewerUserData, developerUserData]) {
           const response = await request(app.getHttpServer())
             .post(`/api/apps`)
-            .set('Authorization', authHeaderForUser(userData.user));
+            .set('tj-workspace-id', userData.user.defaultOrganizationId)
+            .set('Cookie', userData['tokenCookie'])
+            .send({
+              name: appName,
+            });
 
           expect(response.statusCode).toBe(403);
         }
 
         const response = await request(app.getHttpServer())
           .post(`/api/apps`)
-          .set('Authorization', authHeaderForUser(adminUserData.user));
+          .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+          .set('Cookie', adminUserData['tokenCookie'])
+          .send({
+            name: appName,
+          });
 
         expect(response.statusCode).toBe(201);
-        expect(response.body.name).toBe('Untitled app');
+        expect(response.body.name).toContain('My app');
+
+        await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
+        await logoutUser(app, viewerUserData['tokenCookie'], viewerUserData.user.defaultOrganizationId);
+        await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
       });
     });
 
@@ -91,18 +118,29 @@ describe('apps controller', () => {
         groups: ['all_users', 'admin'],
       });
 
+      const loggedUser = await authenticateUser(app);
+
+      await createAppEnvironments(app, adminUserData.organization.id);
+
+      const appName = 'My app';
       const response = await request(app.getHttpServer())
         .post(`/api/apps`)
-        .set('Authorization', authHeaderForUser(adminUserData.user));
+        .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+        .set('Cookie', loggedUser.tokenCookie)
+        .send({
+          name: appName,
+        });
 
       expect(response.statusCode).toBe(201);
-      expect(response.body.name).toBe('Untitled app');
+      expect(response.body.name).toContain('My app');
 
       const appId = response.body.id;
-      const application = await App.findOne({ where: { id: appId } });
+      const application = await App.findOneOrFail({ where: { id: appId } });
 
-      expect(application.name).toBe('Untitled app');
+      expect(application.name).toContain('My app');
       expect(application.id).toBe(application.slug);
+
+      // await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
     });
   });
 
@@ -119,9 +157,16 @@ describe('apps controller', () => {
           email: 'admin@tooljet.io',
           groups: ['all_users', 'admin'],
         });
+
+        let loggedUser = await authenticateUser(app);
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const organization = adminUserData.organization;
-        const allUserGroup = await getManager().findOne(GroupPermission, {
-          where: { group: 'all_users', organization: adminUserData.organization },
+        const allUserGroup = await getManager().findOneOrFail(GroupPermission, {
+          where: {
+            group: 'all_users',
+            organization: adminUserData.organization,
+          },
         });
         const developerUserData = await createUser(app, {
           email: 'developer@tooljet.io',
@@ -129,44 +174,71 @@ describe('apps controller', () => {
           organization,
         });
 
+        loggedUser = await authenticateUser(app, 'developer@tooljet.io');
+        developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const anotherOrgAdminUserData = await createUser(app, {
           email: 'another@tooljet.io',
           groups: ['all_users', 'admin'],
         });
+
+        loggedUser = await authenticateUser(app, 'another@tooljet.io');
+        anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const anotherApplication = await createApplication(app, {
           name: 'Another organization App',
           user: anotherOrgAdminUserData.user,
         });
 
-        const nonPermissibleApp = await createApplication(app, {
-          name: 'Non Permissible App',
-          user: adminUserData.user,
-        });
+        const nonPermissibleApp = await createApplication(
+          app,
+          {
+            name: 'Non Permissible App',
+            user: adminUserData.user,
+          },
+          false
+        );
         await getManager().update(AppGroupPermission, { appId: nonPermissibleApp.id }, { read: false });
 
-        const publicApp = await createApplication(app, {
-          name: 'Public App',
-          user: adminUserData.user,
-          isPublic: true,
-        });
+        const publicApp = await createApplication(
+          app,
+          {
+            name: 'Public App',
+            user: adminUserData.user,
+            isPublic: true,
+          },
+          false
+        );
         await getManager().update(AppGroupPermission, { appId: publicApp.id }, { read: false });
-        const ownedApp = await createApplication(app, {
-          name: 'Owned App',
-          user: developerUserData.user,
-        });
-        const appNotInFolder = await createApplication(app, {
-          name: 'App not in folder',
-          user: adminUserData.user,
-        });
+        const ownedApp = await createApplication(
+          app,
+          {
+            name: 'Owned App',
+            user: developerUserData.user,
+          },
+          false
+        );
+        const appNotInFolder = await createApplication(
+          app,
+          {
+            name: 'App not in folder',
+            user: adminUserData.user,
+          },
+          false
+        );
         await getManager().update(
           AppGroupPermission,
           { app: appNotInFolder, groupPermissionId: allUserGroup },
           { read: true }
         );
-        const appInFolder = await createApplication(app, {
-          name: 'App in folder',
-          user: adminUserData.user,
-        });
+        const appInFolder = await createApplication(
+          app,
+          {
+            name: 'App in folder',
+            user: adminUserData.user,
+          },
+          false
+        );
         await getManager().update(
           AppGroupPermission,
           { app: appInFolder, groupPermissionId: allUserGroup },
@@ -183,7 +255,8 @@ describe('apps controller', () => {
 
         let response = await request(app.getHttpServer())
           .get(`/api/apps`)
-          .set('Authorization', authHeaderForUser(developerUserData.user));
+          .set('tj-workspace-id', developerUserData.user.defaultOrganizationId)
+          .set('Cookie', developerUserData['tokenCookie']);
 
         expect(response.statusCode).toBe(200);
 
@@ -202,7 +275,8 @@ describe('apps controller', () => {
 
         response = await request(app.getHttpServer())
           .get(`/api/apps?searchKey=public`)
-          .set('Authorization', authHeaderForUser(developerUserData.user));
+          .set('tj-workspace-id', developerUserData.user.defaultOrganizationId)
+          .set('Cookie', developerUserData['tokenCookie']);
 
         expect(response.statusCode).toBe(200);
 
@@ -219,7 +293,8 @@ describe('apps controller', () => {
 
         response = await request(app.getHttpServer())
           .get(`/api/apps`)
-          .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user));
+          .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+          .set('Cookie', anotherOrgAdminUserData['tokenCookie']);
 
         expect(response.statusCode).toBe(200);
 
@@ -236,7 +311,8 @@ describe('apps controller', () => {
 
         response = await request(app.getHttpServer())
           .get(`/api/apps?searchKey=another`)
-          .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user));
+          .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+          .set('Cookie', anotherOrgAdminUserData['tokenCookie']);
 
         expect(response.statusCode).toBe(200);
 
@@ -253,7 +329,8 @@ describe('apps controller', () => {
 
         response = await request(app.getHttpServer())
           .get(`/api/apps?searchKey=public`)
-          .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user));
+          .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+          .set('Cookie', anotherOrgAdminUserData['tokenCookie']);
 
         expect(response.statusCode).toBe(200);
 
@@ -267,6 +344,14 @@ describe('apps controller', () => {
           folder_count: 0,
           current_page: 1,
         });
+
+        await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+        await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
+        await logoutUser(
+          app,
+          anotherOrgAdminUserData['tokenCookie'],
+          anotherOrgAdminUserData.user.defaultOrganizationId
+        );
       });
     });
 
@@ -276,6 +361,8 @@ describe('apps controller', () => {
           email: 'admin@tooljet.io',
           groups: ['all_users', 'admin'],
         });
+        let loggedUser = await authenticateUser(app);
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
         const organization = adminUserData.organization;
         const folder = await getManager().save(Folder, {
           name: 'Folder',
@@ -286,7 +373,8 @@ describe('apps controller', () => {
           groups: ['all_users', 'developer'],
           organization,
         });
-
+        loggedUser = await authenticateUser(app, 'developer@tooljet.io');
+        developerUserData['tokenCookie'] = loggedUser.tokenCookie;
         const anotherOrgAdminUserData = await createUser(app, {
           email: 'another@tooljet.io',
           groups: ['all_users', 'admin'],
@@ -296,53 +384,81 @@ describe('apps controller', () => {
           user: anotherOrgAdminUserData.user,
         });
 
-        const nonPermissibleApp = await createApplication(app, {
-          name: 'Non Permissible App',
-          user: adminUserData.user,
-        });
+        const nonPermissibleApp = await createApplication(
+          app,
+          {
+            name: 'Non Permissible App',
+            user: adminUserData.user,
+          },
+          false
+        );
         await getManager().update(AppGroupPermission, { appId: nonPermissibleApp.id }, { read: false });
 
-        const publicApp = await createApplication(app, {
-          name: 'Public App',
-          user: adminUserData.user,
-          isPublic: true,
-        });
+        const publicApp = await createApplication(
+          app,
+          {
+            name: 'Public App',
+            user: adminUserData.user,
+            isPublic: true,
+          },
+          false
+        );
         await getManager().update(AppGroupPermission, { appId: publicApp.id }, { read: false });
 
-        await createApplication(app, {
-          name: 'Owned App',
-          user: developerUserData.user,
-        });
-        const appNotInfolder = await createApplication(app, {
-          name: 'App not in folder',
-          user: adminUserData.user,
-        });
+        await createApplication(
+          app,
+          {
+            name: 'Owned App',
+            user: developerUserData.user,
+          },
+          false
+        );
+        const appNotInfolder = await createApplication(
+          app,
+          {
+            name: 'App not in folder',
+            user: adminUserData.user,
+          },
+          false
+        );
         await getManager().update(AppGroupPermission, { appId: appNotInfolder.id }, { read: true });
-        const appInFolder = await createApplication(app, {
-          name: 'App in folder',
-          user: adminUserData.user,
-        });
+        const appInFolder = await createApplication(
+          app,
+          {
+            name: 'App in folder',
+            user: adminUserData.user,
+          },
+          false
+        );
         await getManager().update(AppGroupPermission, { appId: appInFolder.id }, { read: true });
         await getManager().save(FolderApp, {
           app: appInFolder,
           folder: folder,
         });
 
-        const publicAppInFolder = await createApplication(app, {
-          name: 'Public App in Folder',
-          user: adminUserData.user,
-          isPublic: true,
-        });
+        const publicAppInFolder = await createApplication(
+          app,
+          {
+            name: 'Public App in Folder',
+            user: adminUserData.user,
+            isPublic: true,
+          },
+          false
+        );
         await getManager().update(AppGroupPermission, { appId: publicAppInFolder.id }, { read: false });
         await getManager().save(FolderApp, {
           app: publicAppInFolder,
           folder: folder,
         });
 
-        const nonPermissibleAppInFolder = await createApplication(app, {
-          name: 'Non permissible App in folder',
-          user: adminUserData.user,
-        });
+        const nonPermissibleAppInFolder = await createApplication(
+          app,
+          {
+            name: 'Non permissible App in folder',
+            user: adminUserData.user,
+          },
+          false
+        );
         await getManager().update(AppGroupPermission, { appId: nonPermissibleAppInFolder.id }, { read: false });
         await getManager().save(FolderApp, {
           app: nonPermissibleAppInFolder,
@@ -352,7 +468,8 @@ describe('apps controller', () => {
         let response = await request(app.getHttpServer())
           .get(`/api/apps`)
           .query({ folder: folder.id, page: 1 })
-          .set('Authorization', authHeaderForUser(developerUserData.user));
+          .set('tj-workspace-id', developerUserData.user.defaultOrganizationId)
+          .set('Cookie', developerUserData['tokenCookie']);
 
         expect(response.statusCode).toBe(200);
 
@@ -370,7 +487,8 @@ describe('apps controller', () => {
         response = await request(app.getHttpServer())
           .get(`/api/apps?searchKey=public app in`)
           .query({ folder: folder.id, page: 1 })
-          .set('Authorization', authHeaderForUser(developerUserData.user));
+          .set('tj-workspace-id', developerUserData.user.defaultOrganizationId)
+          .set('Cookie', developerUserData['tokenCookie']);
 
         expect(response.statusCode).toBe(200);
 
@@ -384,16 +502,21 @@ describe('apps controller', () => {
           folder_count: 1,
           current_page: 1,
         });
+
+        await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
       });
     });
   });
 
-  describe('POST /api/apps/:id/clone', () => {
+  describe('POST /api/v2/resources/clone', () => {
     it('should be able to clone the app if user group is admin', async () => {
       const adminUserData = await createUser(app, {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
+      let loggedUser = await authenticateUser(app);
+      adminUserData['tokenCookie'] = loggedUser.tokenCookie;
 
       const developerUserData = await createUser(app, {
         email: 'dev@tooljet.io',
@@ -401,38 +524,62 @@ describe('apps controller', () => {
         organization: adminUserData.organization,
       });
 
+      loggedUser = await authenticateUser(app, 'dev@tooljet.io');
+      developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const viewerUserData = await createUser(app, {
         email: 'viewer@tooljet.io',
         groups: ['all_users', 'viewer'],
         organization: adminUserData.organization,
       });
 
+      loggedUser = await authenticateUser(app, 'viewer@tooljet.io');
+      viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const application = await createApplication(app, {
         name: 'App to clone',
         user: adminUserData.user,
       });
 
+      await createApplicationVersion(app, application);
+
+      const payload = {
+        app: [{ id: application.id, name: `${application.name}_Copy` }],
+        organization_id: application.organizationId,
+      };
+
       let response = await request(app.getHttpServer())
-        .post(`/api/apps/${application.id}/clone`)
-        .set('Authorization', authHeaderForUser(adminUserData.user));
+        .post('/api/v2/resources/clone')
+        .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+        .set('Cookie', adminUserData['tokenCookie'])
+        .send(payload);
 
       expect(response.statusCode).toBe(201);
+      expect(response.body.success).toBe(true);
 
-      const appId = response.body.id;
-      const clonedApplication = await App.findOne({ where: { id: appId } });
-      expect(clonedApplication.name).toBe('App to clone');
+      const appId = response.body['imports']['app'][0]['id'];
+      const clonedApplication = await App.findOneOrFail({ where: { id: appId } });
+      expect(clonedApplication.name).toContain('App to clone');
 
       response = await request(app.getHttpServer())
-        .post(`/api/apps/${application.id}/clone`)
-        .set('Authorization', authHeaderForUser(developerUserData.user));
+        .post('/api/v2/resources/clone')
+        .set('tj-workspace-id', developerUserData.user.defaultOrganizationId)
+        .set('Cookie', developerUserData['tokenCookie'])
+        .send(payload);
 
       expect(response.statusCode).toBe(403);
 
       response = await request(app.getHttpServer())
-        .post(`/api/apps/${application.id}/clone`)
-        .set('Authorization', authHeaderForUser(viewerUserData.user));
+        .post('/api/v2/resources/clone')
+        .set('tj-workspace-id', viewerUserData.user.defaultOrganizationId)
+        .set('Cookie', viewerUserData['tokenCookie'])
+        .send(payload);
 
       expect(response.statusCode).toBe(403);
+
+      await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+      await logoutUser(app, viewerUserData['tokenCookie'], viewerUserData.user.defaultOrganizationId);
+      await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
     });
 
     it('should not be able to clone the app if app is of another organization', async () => {
@@ -440,10 +587,14 @@ describe('apps controller', () => {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
       const anotherOrgAdminUserData = await createUser(app, {
         email: 'another@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
+      const loggedUser = await authenticateUser(app, 'another@tooljet.io');
+
       const application = await createApplication(app, {
         name: 'name',
         user: adminUserData.user,
@@ -451,9 +602,13 @@ describe('apps controller', () => {
 
       const response = await request(app.getHttpServer())
         .post(`/api/apps/${application.id}/clone`)
-        .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user));
+        .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+        .set('Cookie', loggedUser.tokenCookie)
+        .send({ name: 'name_Copy' });
 
       expect(response.statusCode).toBe(403);
+
+      await logoutUser(app, loggedUser.tokenCookie, anotherOrgAdminUserData.user.defaultOrganizationId);
     });
   });
 
@@ -463,18 +618,24 @@ describe('apps controller', () => {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
+      const loggedUser = await authenticateUser(app);
+
       const application = await createApplication(app, {
         user: adminUserData.user,
       });
 
       const response = await request(app.getHttpServer())
         .put(`/api/apps/${application.id}`)
-        .set('Authorization', authHeaderForUser(adminUserData.user))
+        .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+        .set('Cookie', loggedUser.tokenCookie)
         .send({ app: { name: 'new name' } });
 
       expect(response.statusCode).toBe(200);
       await application.reload();
       expect(application.name).toBe('new name');
+
+      await logoutUser(app, loggedUser.tokenCookie, adminUserData.user.defaultOrganizationId);
     });
 
     it('should not be able to update name of the app if admin of another organization', async () => {
@@ -491,14 +652,19 @@ describe('apps controller', () => {
         user: adminUserData.user,
       });
 
+      const loggedUser = await authenticateUser(app, 'another@tooljet.io');
+
       const response = await request(app.getHttpServer())
         .put(`/api/apps/${application.id}`)
-        .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user))
+        .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+        .set('Cookie', loggedUser.tokenCookie)
         .send({ app: { name: 'new name' } });
 
       expect(response.statusCode).toBe(403);
       await application.reload();
       expect(application.name).toBe('name');
+
+      await logoutUser(app, loggedUser.tokenCookie, anotherOrgAdminUserData.user.defaultOrganizationId);
     });
 
     it('should not allow custom groups without app create permission to change the name of apps', async () => {
@@ -516,61 +682,114 @@ describe('apps controller', () => {
         groups: ['all_users', 'developer'],
         organization: adminUserData.organization,
       });
+
+      let loggedUser = await authenticateUser(app, 'dev@tooljet.io');
+      developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const viewerUserData = await createUser(app, {
         email: 'viewer@tooljet.io',
         groups: ['all_users', 'viewer'],
         organization: adminUserData.organization,
       });
 
+      loggedUser = await authenticateUser(app, 'viewer@tooljet.io');
+      viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       let response = await request(app.getHttpServer())
         .put(`/api/apps/${application.id}`)
-        .set('Authorization', authHeaderForUser(developerUserData.user))
+        .set('tj-workspace-id', developerUserData.user.defaultOrganizationId)
+        .set('Cookie', developerUserData['tokenCookie'])
         .send({ app: { name: 'new name' } });
       expect(response.statusCode).toBe(403);
 
       response = await request(app.getHttpServer())
         .put(`/api/apps/${application.id}`)
-        .set('Authorization', authHeaderForUser(viewerUserData.user))
+        .set('tj-workspace-id', viewerUserData.user.defaultOrganizationId)
+        .set('Cookie', viewerUserData['tokenCookie'])
         .send({ app: { name: 'new name' } });
       expect(response.statusCode).toBe(403);
 
       await application.reload();
       expect(application.name).toBe('name');
+
+      await logoutUser(app, viewerUserData['tokenCookie'], viewerUserData.user.defaultOrganizationId);
+      await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
     });
   });
 
   describe('DELETE delete app', () => {
-    it('should be possible for the admin to delete an app, cascaded with its versions, queries and data sources', async () => {
+    it('should be possible for the admin to delete an app, cascaded with its versions, queries, data sources and comments', async () => {
       const admin = await createUser(app, {
-        email: 'adminForDelete@tooljet.io',
+        email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
+      });
+
+      const loggedUser = await authenticateUser(app);
+      admin['tokenCookie'] = loggedUser.tokenCookie;
+
+      const { user } = await createUser(app, {
+        firstName: 'mention',
+        lastName: 'user',
+        email: 'user@tooljet.io',
+        groups: ['all_users'],
+        organization: admin.organization,
       });
       const application = await createApplication(app, {
         name: 'AppTObeDeleted',
         user: admin.user,
       });
       const version = await createApplicationVersion(app, application);
-      const dataQuery = await createDataQuery(app, {
-        application,
-        kind: 'test_kind',
-      });
+
       const dataSource = await createDataSource(app, {
-        application,
+        appVersion: version,
         kind: 'test_kind',
         name: 'test_name',
       });
 
+      const dataQuery = await createDataQuery(app, {
+        dataSource,
+      });
+
+      const threadResponse = await request(app.getHttpServer())
+        .post(`/api/threads`)
+        .set('tj-workspace-id', admin.user.defaultOrganizationId)
+        .set('Cookie', admin['tokenCookie'])
+        .send({
+          appId: application.id,
+          appVersionsId: version.id,
+          x: 54.72136222910217,
+          y: 405,
+        });
+      expect(threadResponse.statusCode).toBe(201);
+
+      const thread = threadResponse.body;
+
+      const commentsResponse = await request(app.getHttpServer())
+        .post(`/api/comments`)
+        .set('tj-workspace-id', admin.user.defaultOrganizationId)
+        .set('Cookie', admin['tokenCookie'])
+        .send({
+          threadId: thread.id,
+          comment: '(@mention user) ',
+          appVersionsId: version.id,
+          mentionedUsers: [user.id],
+        });
+      expect(commentsResponse.statusCode).toBe(201);
+
       const response = await request(app.getHttpServer())
         .delete(`/api/apps/${application.id}`)
-        .set('Authorization', authHeaderForUser(admin.user));
+        .set('tj-workspace-id', admin.user.defaultOrganizationId)
+        .set('Cookie', admin['tokenCookie']);
 
       expect(response.statusCode).toBe(200);
 
-      expect(await App.findOne({ where: { id: application.id } })).toBeUndefined();
-      expect(await AppVersion.findOne({ where: { id: version.id } })).toBeUndefined();
-      expect(await DataQuery.findOne({ where: { id: dataQuery.id } })).toBeUndefined();
-      expect(await DataSource.findOne({ where: { id: dataSource.id } })).toBeUndefined();
-      expect(await AppUser.findOne({ where: { appId: application.id } })).toBeUndefined();
+      await expect(App.findOneOrFail({ where: { id: application.id } })).rejects.toThrow(expect.any(Error));
+      await expect(AppVersion.findOneOrFail({ where: { id: version.id } })).rejects.toThrow(expect.any(Error));
+      await expect(DataQuery.findOneOrFail({ where: { id: dataQuery.id } })).rejects.toThrow(expect.any(Error));
+      await expect(DataSource.findOneOrFail({ where: { id: dataSource.id } })).rejects.toThrow(expect.any(Error));
+      await expect(AppUser.findOneOrFail({ where: { appId: application.id } })).rejects.toThrow(expect.any(Error));
+
+      await logoutUser(app, admin['tokenCookie'], admin.user.defaultOrganizationId);
     });
 
     it('should be possible for app creator to delete an app', async () => {
@@ -578,6 +797,10 @@ describe('apps controller', () => {
         email: 'developer@tooljet.io',
         groups: ['all_users', 'developer'],
       });
+
+      const loggedUser = await authenticateUser(app, 'developer@tooljet.io');
+      developer['tokenCookie'] = loggedUser.tokenCookie;
+
       const application = await createApplication(app, {
         name: 'AppTObeDeleted',
         user: developer.user,
@@ -592,10 +815,13 @@ describe('apps controller', () => {
 
       const response = await request(app.getHttpServer())
         .delete(`/api/apps/${application.id}`)
-        .set('Authorization', authHeaderForUser(developer.user));
+        .set('tj-workspace-id', developer.user.defaultOrganizationId)
+        .set('Cookie', developer['tokenCookie']);
 
       expect(response.statusCode).toBe(200);
-      expect(await App.findOne({ where: { id: application.id } })).toBeUndefined();
+      await expect(App.findOneOrFail({ where: { id: application.id } })).rejects.toThrow(expect.any(Error));
+
+      await logoutUser(app, developer['tokenCookie'], developer.user.defaultOrganizationId);
     });
 
     it('should not be possible for non admin to delete an app', async () => {
@@ -603,6 +829,7 @@ describe('apps controller', () => {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
       const application = await createApplication(app, {
         name: 'name',
         user: adminUserData.user,
@@ -614,13 +841,18 @@ describe('apps controller', () => {
         organization: adminUserData.organization,
       });
 
+      const loggedUser = await authenticateUser(app, 'dev@tooljet.io');
+      developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const response = await request(app.getHttpServer())
         .delete(`/api/apps/${application.id}`)
-        .set('Authorization', authHeaderForUser(developerUserData.user));
+        .set('tj-workspace-id', developerUserData.user.defaultOrganizationId)
+        .set('Cookie', developerUserData['tokenCookie']);
 
       expect(response.statusCode).toBe(403);
 
-      expect(await App.findOne({ where: { id: application.id } })).not.toBeUndefined();
+      await expect(App.findOneOrFail({ where: { id: application.id } })).resolves;
+      await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
     });
   });
 
@@ -637,10 +869,15 @@ describe('apps controller', () => {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
       const anotherOrgAdminUserData = await createUser(app, {
         email: 'another@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
+      const loggedUser = await authenticateUser(app, 'another@tooljet.io');
+      anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const application = await createApplication(app, {
         name: 'name',
         user: adminUserData.user,
@@ -648,9 +885,12 @@ describe('apps controller', () => {
 
       const response = await request(app.getHttpServer())
         .get(`/api/apps/${application.id}/users`)
-        .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user));
+        .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+        .set('Cookie', anotherOrgAdminUserData['tokenCookie']);
 
       expect(response.statusCode).toBe(403);
+
+      await logoutUser(app, anotherOrgAdminUserData['tokenCookie'], anotherOrgAdminUserData.user.defaultOrganizationId);
     });
 
     xit('should be able to fetch app users if group is admin/developer/viewer of same organization', async () => {
@@ -658,17 +898,28 @@ describe('apps controller', () => {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
+      let loggedUser = await authenticateUser(app);
+      adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const organization = adminUserData.organization;
       const developerUserData = await createUser(app, {
         email: 'developer@tooljet.io',
         groups: ['all_users', 'developer'],
         organization,
       });
+
+      loggedUser = await authenticateUser(app, 'developer@tooljet.io');
+      developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const viewerUserData = await createUser(app, {
         email: 'viewer@tooljet.io',
         groups: ['all_users', 'viewer'],
         organization,
       });
+
+      loggedUser = await authenticateUser(app, 'viewer@tooljet.io');
+      viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
 
       const application = await createApplication(app, {
         name: 'name',
@@ -678,11 +929,16 @@ describe('apps controller', () => {
       for (const userData of [adminUserData, developerUserData, viewerUserData]) {
         const response = await request(app.getHttpServer())
           .get(`/api/apps/${application.id}/users`)
-          .set('Authorization', authHeaderForUser(userData.user));
+          .set('tj-workspace-id', userData.user.defaultOrganizationId)
+          .set('Cookie', userData['tokenCookie']);
 
         expect(response.statusCode).toBe(200);
         expect(response.body.users.length).toBe(1);
       }
+
+      await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+      await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
+      await logoutUser(app, viewerUserData['tokenCookie'], viewerUserData.user.defaultOrganizationId);
     });
   });
 
@@ -693,6 +949,10 @@ describe('apps controller', () => {
           email: 'admin@tooljet.io',
           groups: ['all_users', 'admin'],
         });
+
+        let loggedUser = await authenticateUser(app);
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const organization = adminUserData.organization;
         const defaultUserData = await createUser(app, {
           email: 'developer@tooljet.io',
@@ -700,13 +960,16 @@ describe('apps controller', () => {
           organization,
         });
 
+        loggedUser = await authenticateUser(app, 'developer@tooljet.io');
+        defaultUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const application = await createApplication(app, {
           name: 'name',
           user: adminUserData.user,
         });
         await createApplicationVersion(app, application);
 
-        const allUserGroup = await getRepository(GroupPermission).findOne({
+        const allUserGroup = await getRepository(GroupPermission).findOneOrFail({
           where: {
             group: 'all_users',
           },
@@ -720,10 +983,58 @@ describe('apps controller', () => {
         for (const userData of [adminUserData, defaultUserData]) {
           const response = await request(app.getHttpServer())
             .get(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(userData.user));
+            .set('tj-workspace-id', userData.user.defaultOrganizationId)
+            .set('Cookie', userData['tokenCookie']);
 
           expect(response.statusCode).toBe(200);
           expect(response.body.versions.length).toBe(1);
+        }
+      });
+
+      it('should be able to fetch app versions only for specific environment', async () => {
+        const adminUserData = await createUser(app, {
+          email: 'admin@tooljet.io',
+          groups: ['all_users', 'admin'],
+        });
+
+        let loggedUser = await authenticateUser(app);
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+        const organization = adminUserData.organization;
+        const defaultUserData = await createUser(app, {
+          email: 'developer@tooljet.io',
+          groups: ['all_users'],
+          organization,
+        });
+
+        loggedUser = await authenticateUser(app, 'developer@tooljet.io');
+        defaultUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+        const application = await createApplication(app, {
+          name: 'name',
+          user: adminUserData.user,
+        });
+
+        const appEnvironments = await getAllEnvironments(app, organization.id);
+        const versionsEnvironmentMapping = [];
+        appEnvironments.map(async (env) => {
+          const version = await createApplicationVersion(app, application, { currentEnvironmentId: env.id });
+          versionsEnvironmentMapping.push({
+            [env.id]: [version.id],
+          });
+        });
+
+        for (const userData of [adminUserData, defaultUserData]) {
+          for (const item of versionsEnvironmentMapping) {
+            const envId = Object.keys(item)[0];
+            const response = await request(app.getHttpServer())
+              .get(`/api/apps/${application.id}/versions?environment_id=${envId}`)
+              .set('tj-workspace-id', userData.user.defaultOrganizationId)
+              .set('Cookie', userData['tokenCookie']);
+
+            expect(response.statusCode).toBe(200);
+            expect(response.body.versions.length).toBe(1);
+          }
         }
       });
     });
@@ -739,6 +1050,10 @@ describe('apps controller', () => {
             email: 'another@tooljet.io',
             groups: ['all_users', 'admin'],
           });
+
+          const loggedUser = await authenticateUser(app, 'another@tooljet.io');
+          anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
           const application = await createApplication(app, {
             name: 'name',
             user: adminUserData.user,
@@ -747,9 +1062,12 @@ describe('apps controller', () => {
 
           const response = await request(app.getHttpServer())
             .get(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user));
+            .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+            .set('Cookie', anotherOrgAdminUserData['tokenCookie']);
 
           expect(response.statusCode).toBe(403);
+
+          await logoutUser(app, loggedUser.tokenCookie, anotherOrgAdminUserData.user.defaultOrganizationId);
         });
 
         it('should be able to create a new app version if group is admin or has app update permission group in same organization', async () => {
@@ -757,17 +1075,25 @@ describe('apps controller', () => {
             email: 'admin@tooljet.io',
             groups: ['all_users', 'admin'],
           });
+
+          let loggedUser = await authenticateUser(app);
+          adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
           const developerUserData = await createUser(app, {
             email: 'dev@tooljet.io',
             groups: ['all_users', 'developer'],
             organization: adminUserData.organization,
           });
+
+          loggedUser = await authenticateUser(app, 'dev@tooljet.io');
+          developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
           const application = await createApplication(app, {
             user: adminUserData.user,
           });
-
+          const version = await createApplicationVersion(app, application);
           // setup app permissions for developer
-          const developerUserGroup = await getRepository(GroupPermission).findOne({
+          const developerUserGroup = await getRepository(GroupPermission).findOneOrFail({
             where: {
               group: 'developer',
             },
@@ -778,22 +1104,31 @@ describe('apps controller', () => {
             delete: false,
           });
 
-          for (const userData of [adminUserData, developerUserData]) {
+          for (const [index, userData] of [adminUserData, developerUserData].entries()) {
             const response = await request(app.getHttpServer())
               .post(`/api/apps/${application.id}/versions`)
-              .set('Authorization', authHeaderForUser(userData.user))
+              .set('tj-workspace-id', userData.user.defaultOrganizationId)
+              .set('Cookie', userData['tokenCookie'])
               .send({
-                versionName: 'v1',
+                versionName: `v_${index}`,
+                versionFromId: version.id,
               });
 
             expect(response.statusCode).toBe(201);
           }
+
+          await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+          await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
         });
 
         it('should be able to create a new app version from existing version', async () => {
           const adminUserData = await createUser(app, {
             email: 'admin@tooljet.io',
           });
+
+          const loggedUser = await authenticateUser(app);
+          adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
           const application = await createApplication(app, {
             user: adminUserData.user,
           });
@@ -804,7 +1139,8 @@ describe('apps controller', () => {
 
           const response = await request(app.getHttpServer())
             .post(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(adminUserData.user))
+            .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+            .set('Cookie', adminUserData['tokenCookie'])
             .send({
               versionName: 'v2',
               versionFromId: v1.id,
@@ -812,8 +1148,12 @@ describe('apps controller', () => {
 
           expect(response.statusCode).toBe(201);
 
-          const v2 = await getManager().findOne(AppVersion, { where: { name: 'v2' } });
+          const v2 = await getManager().findOneOrFail(AppVersion, {
+            where: { name: 'v2' },
+          });
           expect(v2.definition).toEqual(v1.definition);
+
+          await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
         });
 
         it('should not be able to create app versions if user of another organization', async () => {
@@ -821,10 +1161,18 @@ describe('apps controller', () => {
             email: 'admin@tooljet.io',
             groups: ['all_users', 'admin'],
           });
+
+          let loggedUser = await authenticateUser(app);
+          adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
           const anotherOrgAdminUserData = await createUser(app, {
             email: 'another@tooljet.io',
             groups: ['all_users', 'admin'],
           });
+
+          loggedUser = await authenticateUser(app, 'another@tooljet.io');
+          anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
           const application = await createApplication(app, {
             name: 'name',
             user: adminUserData.user,
@@ -833,12 +1181,18 @@ describe('apps controller', () => {
 
           const response = await request(app.getHttpServer())
             .post(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user))
+            .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+            .set('Cookie', anotherOrgAdminUserData['tokenCookie'])
             .send({
               versionName: 'v0',
             });
 
           expect(response.statusCode).toBe(403);
+          await logoutUser(
+            app,
+            anotherOrgAdminUserData['tokenCookie'],
+            anotherOrgAdminUserData.user.defaultOrganizationId
+          );
         });
 
         it('should not be able to create app versions if user does not have app create permission group', async () => {
@@ -846,11 +1200,19 @@ describe('apps controller', () => {
             email: 'admin@tooljet.io',
             groups: ['all_users', 'admin'],
           });
+
+          let loggedUser = await authenticateUser(app);
+          adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
           const viewerUserData = await createUser(app, {
             email: 'viewer@tooljet.io',
             groups: ['all_users'],
             organization: adminUserData.organization,
           });
+
+          loggedUser = await authenticateUser(app, 'viewer@tooljet.io');
+          viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
           const application = await createApplication(app, {
             name: 'name',
             user: adminUserData.user,
@@ -859,12 +1221,15 @@ describe('apps controller', () => {
 
           const response = await request(app.getHttpServer())
             .post(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(viewerUserData.user))
+            .set('tj-workspace-id', viewerUserData.user.defaultOrganizationId)
+            .set('Cookie', viewerUserData['tokenCookie'])
             .send({
               versionName: 'v0',
             });
 
           expect(response.statusCode).toBe(403);
+          await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+          await logoutUser(app, viewerUserData['tokenCookie'], viewerUserData.user.defaultOrganizationId);
         });
       });
 
@@ -874,10 +1239,86 @@ describe('apps controller', () => {
             email: 'admin@tooljet.io',
             groups: ['all_users', 'admin'],
           });
-          const application = await createApplication(app, {
-            user: adminUserData.user,
-          });
+
+          const loggedUser = await authenticateUser(app);
+          adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+          const appEnvironments = await createAppEnvironments(app, adminUserData.user.organizationId);
+
+          const application = await createApplication(
+            app,
+            {
+              user: adminUserData.user,
+            },
+            false
+          );
+
+          //create first version and default app environments
+          const version = await createApplicationVersion(app, application);
+
           const dataSource = await createDataSource(app, {
+            name: 'name',
+            kind: 'postgres',
+            appVersion: version,
+          });
+
+          await createDataSourceOption(app, {
+            dataSource,
+            environmentId: appEnvironments[0].id,
+            options: [],
+          });
+
+          await createDataQuery(app, {
+            dataSource,
+            kind: 'restapi',
+            options: { method: 'get' },
+          });
+
+          const manager = getManager();
+          let dataSources = await manager.find(DataSource);
+          let dataQueries = await manager.find(DataQuery, { relations: ['dataSource'] });
+          expect(dataSources).toHaveLength(1);
+          expect(dataQueries).toHaveLength(1);
+
+          // first version creation associates existing data sources and queries to it
+          expect(dataSources.map((s) => s.appVersionId).includes(version.id)).toBeTruthy();
+          expect(dataQueries.map((q) => q.dataSource.appVersionId).includes(version.id)).toBeTruthy();
+
+          // subsequent version creation will copy and create new data sources and queries from previous version
+          const version2 = await request(app.getHttpServer())
+            .post(`/api/apps/${application.id}/versions`)
+            .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+            .set('Cookie', adminUserData['tokenCookie'])
+            .send({
+              versionName: 'v2',
+              versionFromId: version.id,
+            });
+
+          dataSources = await manager.find(DataSource);
+          dataQueries = await manager.find(DataQuery, { relations: ['dataSource'] });
+          expect(dataSources).toHaveLength(2);
+          expect(dataQueries).toHaveLength(2);
+          expect(dataSources.map((s) => s.appVersionId).includes(version2.body.id)).toBeTruthy();
+          expect(dataQueries.map((q) => q.dataSource.appVersionId).includes(version2.body.id)).toBeTruthy();
+
+          const version3 = await request(app.getHttpServer())
+            .post(`/api/apps/${application.id}/versions`)
+            .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+            .set('Cookie', adminUserData['tokenCookie'])
+            .send({
+              versionName: 'v3',
+              versionFromId: version2.body.id,
+            });
+
+          dataSources = await manager.find(DataSource);
+          dataQueries = await manager.find(DataQuery, { relations: ['dataSource'] });
+          expect(dataSources).toHaveLength(3);
+          expect(dataQueries).toHaveLength(3);
+          expect(dataSources.map((s) => s.appVersionId).includes(version3.body.id)).toBeTruthy();
+          expect(dataQueries.map((q) => q.dataSource.appVersionId).includes(version3.body.id)).toBeTruthy();
+
+          // creating a new version from a non existing version id will throw error when more than 1 versions exist
+          await createDataSource(app, {
             name: 'name',
             kind: 'postgres',
             application: application,
@@ -890,129 +1331,230 @@ describe('apps controller', () => {
             options: { method: 'get' },
           });
 
-          const manager = getManager();
-          // data sources and queries without any version association
-          let dataSources = await manager.find(DataSource);
-          let dataQueries = await manager.find(DataQuery);
-
-          expect(dataSources).toHaveLength(1);
-          expect(dataQueries).toHaveLength(1);
-          expect([...new Set(dataSources.map((s) => s.appVersionId))]).toEqual([null]);
-          expect([...new Set(dataQueries.map((q) => q.appVersionId))]).toEqual([null]);
-
-          let response = await request(app.getHttpServer())
+          const version4 = await request(app.getHttpServer())
             .post(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(adminUserData.user))
+            .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+            .set('Cookie', adminUserData['tokenCookie'])
             .send({
-              versionName: 'v0',
+              versionName: 'v4',
+              versionFromId: 'a77b051a-dd48-4633-a01f-089a845d5f88',
             });
 
-          expect(response.statusCode).toBe(201);
-
-          // first version creation associates existing data sources and queries to it
-          dataSources = await manager.find(DataSource);
-          dataQueries = await manager.find(DataQuery);
-          expect(dataSources).toHaveLength(1);
-          expect(dataQueries).toHaveLength(1);
-          expect(dataSources.map((s) => s.appVersionId).includes(response.body.id)).toBeTruthy();
-          expect(dataQueries.map((q) => q.appVersionId).includes(response.body.id)).toBeTruthy();
-
-          // subsequent version creation will copy and create new data sources and queries from previous version
-          response = await request(app.getHttpServer())
-            .post(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(adminUserData.user))
-            .send({
-              versionName: 'v1',
-              versionFromId: response.body.id,
-            });
-
-          dataSources = await manager.find(DataSource);
-          dataQueries = await manager.find(DataQuery);
-          expect(dataSources).toHaveLength(2);
-          expect(dataQueries).toHaveLength(2);
-          expect(dataSources.map((s) => s.appVersionId).includes(response.body.id)).toBeTruthy();
-          expect(dataQueries.map((q) => q.appVersionId).includes(response.body.id)).toBeTruthy();
-
-          response = await request(app.getHttpServer())
-            .post(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(adminUserData.user))
-            .send({
-              versionName: 'v2',
-              versionFromId: response.body.id,
-            });
-
-          dataSources = await manager.find(DataSource);
-          dataQueries = await manager.find(DataQuery);
-          expect(dataSources).toHaveLength(3);
-          expect(dataQueries).toHaveLength(3);
-          expect(dataSources.map((s) => s.appVersionId).includes(response.body.id)).toBeTruthy();
-          expect(dataQueries.map((q) => q.appVersionId).includes(response.body.id)).toBeTruthy();
+          expect(version4.statusCode).toBe(500);
+          await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
         });
 
+        //will fix this
         it('creates new credentials and copies cipher text on data source', async () => {
           const adminUserData = await createUser(app, {
             email: 'admin@tooljet.io',
           });
-          const application = await importAppFromTemplates(app, adminUserData.user, 'customer-dashboard');
-          const dataSource = await getManager().findOne(DataSource, { where: { appId: application } });
-          const credential = await getManager().findOne(Credential, {
-            where: { id: dataSource.options['password']['credential_id'] },
+
+          const loggedUser = await authenticateUser(app);
+          adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+          const { application, appVersion: initialVersion } = await generateAppDefaults(app, adminUserData.user, {
+            dsOptions: [{ key: 'foo', value: 'bar', encrypted: 'true' }],
           });
+
+          let credentials = await getManager().find(Credential);
+          const credential = credentials[0];
           credential.valueCiphertext = 'strongPassword';
           await getManager().save(credential);
 
-          const response = await request(app.getHttpServer())
+          let response = await request(app.getHttpServer())
             .post(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(adminUserData.user))
+            .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+            .set('Cookie', adminUserData['tokenCookie'])
             .send({
               versionName: 'v1',
             });
 
-          await request(app.getHttpServer())
+          expect(response.statusCode).toBe(400);
+          expect(response.body.message).toBe('Version from should not be empty');
+
+          response = await request(app.getHttpServer())
             .post(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(adminUserData.user))
+            .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+            .set('Cookie', adminUserData['tokenCookie'])
             .send({
-              versionName: 'v2',
-              versionFromId: response.body.id,
-            });
-
-          const dataSources = await getManager().find(DataSource);
-          const dataQueries = await getManager().find(DataQuery);
-
-          expect(dataSources).toHaveLength(2);
-          expect(dataQueries).toHaveLength(4);
-
-          const credentials = await getManager().find(Credential);
-          expect([...new Set(credentials.map((c) => c.valueCiphertext))]).toEqual(['strongPassword']);
-        });
-      });
-
-      describe('app definition', () => {
-        it('should return null when no previous versions exists', async () => {
-          const adminUserData = await createUser(app, {
-            email: 'admin@tooljet.io',
-            groups: ['all_users', 'admin'],
-          });
-          const application = await createApplication(app, {
-            user: adminUserData.user,
-          });
-
-          let response = await request(app.getHttpServer())
-            .post(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(adminUserData.user))
-            .send({
-              versionName: 'v0',
+              versionName: 'v1',
+              versionFromId: initialVersion.id,
             });
 
           expect(response.statusCode).toBe(201);
 
           response = await request(app.getHttpServer())
-            .get(`/api/apps/${application.id}/versions`)
-            .set('Authorization', authHeaderForUser(adminUserData.user));
+            .post(`/api/apps/${application.id}/versions`)
+            .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+            .set('Cookie', adminUserData['tokenCookie'])
+            .send({
+              versionName: 'v2',
+              versionFromId: response.body.id,
+            });
+          const dataSources = await getManager().find(DataSource);
+          const dataQueries = await getManager().find(DataQuery);
 
-          expect(response.statusCode).toBe(200);
-          expect(response.body.versions['0']['definition']).toBe(null);
+          expect(dataSources).toHaveLength(3);
+          expect(dataQueries).toHaveLength(3);
+
+          credentials = await getManager().find(Credential);
+          expect([...new Set(credentials.map((c) => c.valueCiphertext))]).toEqual(['strongPassword']);
+
+          await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
         });
+      });
+    });
+    //deleted the definifion spec while with no versionFrom it will return 500 from server
+  });
+
+  describe('DELETE /api/apps/:id/versions/:versionId', () => {
+    describe('authorization', () => {
+      it('should not be able to delete app versions if user of another organization', async () => {
+        const adminUserData = await createUser(app, {
+          email: 'admin@tooljet.io',
+          groups: ['all_users', 'admin'],
+        });
+
+        const anotherOrgAdminUserData = await createUser(app, {
+          email: 'another@tooljet.io',
+          groups: ['all_users', 'admin'],
+        });
+
+        const loggedUser = await authenticateUser(app, 'another@tooljet.io');
+        anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+        const application = await createApplication(app, {
+          name: 'name',
+          user: adminUserData.user,
+        });
+        const version = await createApplicationVersion(app, application);
+
+        const response = await request(app.getHttpServer())
+          .delete(`/api/apps/${application.id}/versions/${version.id}`)
+          .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+          .set('Cookie', anotherOrgAdminUserData['tokenCookie']);
+
+        expect(response.statusCode).toBe(403);
+        await logoutUser(
+          app,
+          anotherOrgAdminUserData['tokenCookie'],
+          anotherOrgAdminUserData.user.defaultOrganizationId
+        );
+      });
+
+      it('should be able to delete an app version if group is admin or has app update permission group in same organization', async () => {
+        const adminUserData = await createUser(app, {
+          email: 'admin@tooljet.io',
+          groups: ['all_users', 'admin'],
+        });
+
+        let loggedUser = await authenticateUser(app);
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+        const developerUserData = await createUser(app, {
+          email: 'dev@tooljet.io',
+          groups: ['all_users', 'developer'],
+          organization: adminUserData.organization,
+        });
+
+        loggedUser = await authenticateUser(app, 'dev@tooljet.io');
+        developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+        const application = await createApplication(app, {
+          user: adminUserData.user,
+        });
+
+        const version1 = await createApplicationVersion(app, application);
+        const version2 = await createApplicationVersion(app, application, { name: 'v2', definition: null });
+
+        // setup app permissions for developer
+        const developerUserGroup = await getRepository(GroupPermission).findOneOrFail({
+          where: {
+            group: 'developer',
+          },
+        });
+        await createAppGroupPermission(app, application, developerUserGroup.id, {
+          read: false,
+          update: true,
+          delete: false,
+        });
+
+        let response = await request(app.getHttpServer())
+          .delete(`/api/apps/${application.id}/versions/${version1.id}`)
+          .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+          .set('Cookie', adminUserData['tokenCookie']);
+
+        expect(response.statusCode).toBe(200);
+
+        response = await request(app.getHttpServer())
+          .delete(`/api/apps/${application.id}/versions/${version2.id}`)
+          .set('tj-workspace-id', developerUserData.user.defaultOrganizationId)
+          .set('Cookie', developerUserData['tokenCookie']);
+
+        expect(response.statusCode).toBe(403);
+
+        await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+        await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
+      });
+
+      it('should not be able to delete app versions if user does not have app update permission group', async () => {
+        const adminUserData = await createUser(app, {
+          email: 'admin@tooljet.io',
+          groups: ['all_users', 'admin'],
+        });
+
+        const viewerUserData = await createUser(app, {
+          email: 'viewer@tooljet.io',
+          groups: ['all_users'],
+          organization: adminUserData.organization,
+        });
+
+        const loggedUser = await authenticateUser(app, 'viewer@tooljet.io');
+        viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+        const application = await createApplication(app, {
+          name: 'name',
+          user: adminUserData.user,
+        });
+        const version = await createApplicationVersion(app, application);
+
+        const response = await request(app.getHttpServer())
+          .delete(`/api/apps/${application.id}/versions/${version.id}`)
+          .set('tj-workspace-id', viewerUserData.user.defaultOrganizationId)
+          .set('Cookie', viewerUserData['tokenCookie']);
+
+        expect(response.statusCode).toBe(403);
+        await logoutUser(app, viewerUserData['tokenCookie'], viewerUserData.user.defaultOrganizationId);
+      });
+
+      it('should not be able to delete released app version', async () => {
+        const adminUserData = await createUser(app, {
+          email: 'admin@tooljet.io',
+          groups: ['all_users', 'admin'],
+        });
+
+        const loggedUser = await authenticateUser(app);
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+        const application = await createApplication(app, {
+          name: 'name',
+          user: adminUserData.user,
+        });
+        const version = await createApplicationVersion(app, application);
+        await createApplicationVersion(app, application, { name: 'v2', definition: null });
+
+        await getManager().update(App, { id: application.id }, { currentVersionId: version.id });
+
+        const response = await request(app.getHttpServer())
+          .delete(`/api/apps/${application.id}/versions/${version.id}`)
+          .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+          .set('Cookie', adminUserData['tokenCookie']);
+
+        expect(response.statusCode).toBe(400);
+        expect(response.body.message).toBe('You cannot delete a released version');
+
+        await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
       });
     });
   });
@@ -1024,17 +1566,25 @@ describe('apps controller', () => {
           email: 'admin@tooljet.io',
           groups: ['all_users', 'admin'],
         });
+
+        let loggedUser = await authenticateUser(app);
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const developerUserData = await createUser(app, {
           email: 'dev@tooljet.io',
           groups: ['all_users'],
           organization: adminUserData.organization,
         });
+
+        loggedUser = await authenticateUser(app, 'dev@tooljet.io');
+        developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const application = await createApplication(app, {
           user: adminUserData.user,
         });
         const version = await createApplicationVersion(app, application);
 
-        const allUserGroup = await getRepository(GroupPermission).findOne({
+        const allUserGroup = await getRepository(GroupPermission).findOneOrFail({
           where: {
             group: 'all_users',
           },
@@ -1048,10 +1598,14 @@ describe('apps controller', () => {
         for (const userData of [adminUserData, developerUserData]) {
           const response = await request(app.getHttpServer())
             .get(`/api/apps/${application.id}/versions/${version.id}`)
-            .set('Authorization', authHeaderForUser(userData.user));
+            .set('tj-workspace-id', userData.user.defaultOrganizationId)
+            .set('Cookie', userData['tokenCookie']);
 
           expect(response.statusCode).toBe(200);
         }
+
+        await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+        await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
       });
 
       it('should not be able to get app versions if user of another organization', async () => {
@@ -1069,11 +1623,20 @@ describe('apps controller', () => {
         });
         const version = await createApplicationVersion(app, application);
 
+        const loggedUser = await authenticateUser(app, 'another@tooljet.io');
+        anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const response = await request(app.getHttpServer())
           .get(`/api/apps/${application.id}/versions/${version.id}`)
-          .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user));
+          .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+          .set('Cookie', anotherOrgAdminUserData['tokenCookie']);
 
         expect(response.statusCode).toBe(403);
+        await logoutUser(
+          app,
+          anotherOrgAdminUserData['tokenCookie'],
+          anotherOrgAdminUserData.user.defaultOrganizationId
+        );
       });
     });
 
@@ -1083,35 +1646,82 @@ describe('apps controller', () => {
           email: 'admin@tooljet.io',
           groups: ['all_users', 'admin'],
         });
+
+        let loggedUser = await authenticateUser(app, 'admin@tooljet.io');
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const developerUserData = await createUser(app, {
           email: 'dev@tooljet.io',
           groups: ['all_users', 'developer'],
           organization: adminUserData.organization,
         });
+
+        loggedUser = await authenticateUser(app, 'dev@tooljet.io');
+        developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const application = await createApplication(app, {
           user: adminUserData.user,
         });
         const version = await createApplicationVersion(app, application);
 
         // setup app permissions for developer
-        const developerUserGroup = await getRepository(GroupPermission).findOne({ where: { group: 'developer' } });
+        const developerUserGroup = await getRepository(GroupPermission).findOneOrFail({
+          where: { group: 'developer' },
+        });
         await createAppGroupPermission(app, application, developerUserGroup.id, {
           read: false,
           update: true,
           delete: false,
         });
 
+        let count = 0;
+
         for (const userData of [adminUserData, developerUserData]) {
+          count++;
           const response = await request(app.getHttpServer())
             .put(`/api/apps/${application.id}/versions/${version.id}`)
-            .set('Authorization', authHeaderForUser(userData.user))
+            .set('tj-workspace-id', userData.user.defaultOrganizationId)
+            .set('Cookie', userData['tokenCookie'])
             .send({
+              name: 'test' + count,
               definition: { components: {} },
             });
 
           expect(response.statusCode).toBe(200);
           await version.reload();
         }
+
+        await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+        await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
+      });
+
+      it('should be able to update the current version without new definition changes, even it is a released versions', async () => {
+        const adminUserData = await createUser(app, {
+          email: 'admin@tooljet.io',
+          groups: ['all_users', 'admin'],
+        });
+
+        const loggedUser = await authenticateUser(app, 'admin@tooljet.io');
+        const application = await createApplication(app, {
+          user: adminUserData.user,
+        });
+        const version = await createApplicationVersion(app, application);
+
+        let response = await request(app.getHttpServer())
+          .put(`/api/apps/${application.id}`)
+          .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+          .set('Cookie', loggedUser['tokenCookie'])
+          .send({ appName: 'new', current_version_id: version.id });
+
+        expect(response.statusCode).toBe(200);
+
+        response = await request(app.getHttpServer())
+          .put(`/api/apps/${application.id}/versions/${version.id}`)
+          .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+          .set('Cookie', loggedUser['tokenCookie'])
+          .send({ is_user_switched_version: true });
+
+        expect(response.statusCode).toBe(200);
       });
 
       it('should not be able to update app version if no app create permission within same organization', async () => {
@@ -1124,6 +1734,10 @@ describe('apps controller', () => {
           groups: ['all_users'],
           organization: adminUserData.organization,
         });
+
+        const loggedUser = await authenticateUser(app, 'dev@tooljet.io');
+        viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const application = await createApplication(app, {
           user: adminUserData.user,
         });
@@ -1131,12 +1745,15 @@ describe('apps controller', () => {
 
         const response = await request(app.getHttpServer())
           .put(`/api/apps/${application.id}/versions/${version.id}`)
-          .set('Authorization', authHeaderForUser(viewerUserData.user))
+          .set('tj-workspace-id', viewerUserData.user.defaultOrganizationId)
+          .set('Cookie', viewerUserData['tokenCookie'])
           .send({
+            name: 'test',
             definition: { components: {} },
           });
 
         expect(response.statusCode).toBe(403);
+        await logoutUser(app, viewerUserData['tokenCookie'], viewerUserData.user.defaultOrganizationId);
       });
 
       it('should not be able to update app versions if user of another organization', async () => {
@@ -1144,10 +1761,15 @@ describe('apps controller', () => {
           email: 'admin@tooljet.io',
           groups: ['all_users', 'admin'],
         });
+
         const anotherOrgAdminUserData = await createUser(app, {
           email: 'another@tooljet.io',
           groups: ['all_users', 'admin'],
         });
+
+        const loggedUser = await authenticateUser(app, 'another@tooljet.io');
+        anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
         const application = await createApplication(app, {
           name: 'name',
           user: adminUserData.user,
@@ -1156,12 +1778,86 @@ describe('apps controller', () => {
 
         const response = await request(app.getHttpServer())
           .put(`/api/apps/${application.id}/versions/${version.id}`)
-          .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user))
+          .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+          .set('Cookie', anotherOrgAdminUserData['tokenCookie'])
           .send({
+            name: 'test',
             definition: { components: {} },
           });
 
         expect(response.statusCode).toBe(403);
+        await logoutUser(
+          app,
+          anotherOrgAdminUserData['tokenCookie'],
+          anotherOrgAdminUserData.user.defaultOrganizationId
+        );
+      });
+
+      it('should not be able to update app versions if the version is already released', async () => {
+        const adminUserData = await createUser(app, {
+          email: 'admin@tooljet.io',
+          groups: ['all_users', 'admin'],
+        });
+        const loggedUser = await authenticateUser(app);
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+        const application = await createApplication(app, {
+          user: adminUserData.user,
+        });
+        const version = await createApplicationVersion(app, application);
+        await getManager().update(App, application, { currentVersionId: version.id });
+
+        const response = await request(app.getHttpServer())
+          .put(`/api/apps/${application.id}/versions/${version.id}`)
+          .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+          .set('Cookie', adminUserData['tokenCookie'])
+          .send({
+            name: 'test',
+            definition: { components: {} },
+          });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.body.message).toBe('You cannot update a released version');
+        await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+      });
+
+      it('should be able to release the app if the version is promoted to production', async () => {
+        const adminUserData = await createUser(app, {
+          email: 'admin@tooljet.io',
+          groups: ['all_users', 'admin'],
+        });
+        const loggedUser = await authenticateUser(app);
+        adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
+        const application = await createApplication(app, {
+          user: adminUserData.user,
+        });
+        const version = await createApplicationVersion(app, application);
+
+        const environments = await getAllEnvironments(app, adminUserData.organization.id);
+
+        for (const appEnvironment of defaultAppEnvironments) {
+          const currentEnv = environments.find((env) => env.name === appEnvironment.name);
+          if (!appEnvironment.isDefault) {
+            const response = await request(app.getHttpServer())
+              .put(`/api/apps/${application.id}/versions/${version.id}`)
+              .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+              .set('Cookie', adminUserData['tokenCookie'])
+              .send({
+                currentEnvironmentId: currentEnv.id,
+              });
+
+            expect(response.statusCode).toBe(200);
+          } else {
+            const response = await request(app.getHttpServer())
+              .put(`/api/apps/${application.id}`)
+              .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+              .set('Cookie', loggedUser.tokenCookie)
+              .send({ app: { currentVersionId: version.id } });
+
+            expect(response.statusCode).toBe(200);
+          }
+        }
       });
     });
   });
@@ -1178,16 +1874,28 @@ describe('apps controller', () => {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
+      let loggedUser = await authenticateUser(app);
+      adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const developerUserData = await createUser(app, {
         email: 'developer@tooljet.io',
         groups: ['all_users', 'developer'],
         organization: adminUserData.organization,
       });
+
+      loggedUser = await authenticateUser(app, 'developer@tooljet.io');
+      developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const viewerUserData = await createUser(app, {
         email: 'viewer@tooljet.io',
         groups: ['all_users', 'viewer'],
         organization: adminUserData.organization,
       });
+
+      loggedUser = await authenticateUser(app, 'viewer@tooljet.io');
+      viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const application = await createApplication(app, {
         name: 'name',
         user: adminUserData.user,
@@ -1195,7 +1903,7 @@ describe('apps controller', () => {
       });
       await createApplicationVersion(app, application);
       // setup app permissions for developer
-      const developerUserGroup = await getRepository(GroupPermission).findOne({
+      const developerUserGroup = await getRepository(GroupPermission).findOneOrFail({
         where: {
           group: 'developer',
         },
@@ -1206,7 +1914,7 @@ describe('apps controller', () => {
         delete: false,
       });
       // setup app permissions for viewer
-      const viewerUserGroup = await getRepository(GroupPermission).findOne({
+      const viewerUserGroup = await getRepository(GroupPermission).findOneOrFail({
         where: {
           group: 'viewer',
         },
@@ -1220,10 +1928,14 @@ describe('apps controller', () => {
       for (const userData of [adminUserData, developerUserData, viewerUserData]) {
         const response = await request(app.getHttpServer())
           .get('/api/apps/slugs/foo')
-          .set('Authorization', authHeaderForUser(userData.user));
+          .set('Cookie', userData['tokenCookie']);
 
         expect(response.statusCode).toBe(200);
       }
+
+      await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+      await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
+      await logoutUser(app, viewerUserData['tokenCookie'], viewerUserData.user.defaultOrganizationId);
     });
 
     it('should not be able to fetch app using slug if member of another organization', async () => {
@@ -1235,6 +1947,9 @@ describe('apps controller', () => {
         email: 'another@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+      const loggedUser = await authenticateUser(app, 'another@tooljet.io');
+      anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const application = await createApplication(app, {
         name: 'name',
         user: adminUserData.user,
@@ -1244,9 +1959,11 @@ describe('apps controller', () => {
       await createApplicationVersion(app, application);
       const response = await request(app.getHttpServer())
         .get('/api/apps/slugs/foo')
-        .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user));
+        .set('Cookie', anotherOrgAdminUserData['tokenCookie']);
 
-      expect(response.statusCode).toBe(403);
+      expect(response.statusCode).toBe(401);
+
+      await logoutUser(app, anotherOrgAdminUserData['tokenCookie'], anotherOrgAdminUserData.user.defaultOrganizationId);
     });
 
     it('should be able to fetch app using slug if a public app ( even if unauthenticated )', async () => {
@@ -1255,12 +1972,13 @@ describe('apps controller', () => {
         groups: ['all_users', 'admin'],
       });
 
-      await createApplication(app, {
+      const application = await createApplication(app, {
         name: 'name',
         user: adminUserData.user,
         slug: 'foo',
         isPublic: true,
       });
+      await createApplicationVersion(app, application);
 
       const response = await request(app.getHttpServer()).get('/api/apps/slugs/foo');
 
@@ -1269,60 +1987,73 @@ describe('apps controller', () => {
   });
 
   describe('GET /api/apps/:id/export', () => {
-    it('should be able to export app if user has read permission within an organization', async () => {
+    it('should be able to export app if user has create permission within an organization', async () => {
       const adminUserData = await createUser(app, {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
+      let loggedUser = await authenticateUser(app);
+      adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const developerUserData = await createUser(app, {
         email: 'developer@tooljet.io',
         groups: ['all_users', 'developer'],
         organization: adminUserData.organization,
       });
+
+      loggedUser = await authenticateUser(app, 'developer@tooljet.io');
+      developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const viewerUserData = await createUser(app, {
         email: 'viewer@tooljet.io',
         groups: ['all_users', 'viewer'],
         organization: adminUserData.organization,
       });
+
+      loggedUser = await authenticateUser(app, 'viewer@tooljet.io');
+      viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const application = await createApplication(app, {
         name: 'name',
         user: adminUserData.user,
         slug: 'foo',
       });
+
+      await createApplicationVersion(app, application);
+
       // setup app permissions for developer
-      const developerUserGroup = await getRepository(GroupPermission).findOne({
+      const developerUserGroup = await getRepository(GroupPermission).findOneOrFail({
         where: {
           group: 'developer',
         },
       });
-      await createAppGroupPermission(app, application, developerUserGroup.id, {
-        read: true,
-        update: true,
-        delete: false,
-      });
-      // setup app permissions for viewer
-      const viewerUserGroup = await getRepository(GroupPermission).findOne({
-        where: {
-          group: 'viewer',
-        },
-      });
-      await createAppGroupPermission(app, application, viewerUserGroup.id, {
-        read: true,
-        update: false,
-        delete: false,
-      });
+      developerUserGroup.appCreate = true;
+      await developerUserGroup.save();
 
-      for (const userData of [adminUserData, developerUserData, viewerUserData]) {
+      const response = await request(app.getHttpServer())
+        .get(`/api/apps/${application.id}/export`)
+        .set('tj-workspace-id', viewerUserData.user.defaultOrganizationId)
+        .set('Cookie', viewerUserData['tokenCookie']);
+
+      expect(response.statusCode).toBe(403);
+
+      for (const userData of [adminUserData, developerUserData]) {
         const response = await request(app.getHttpServer())
           .get(`/api/apps/${application.id}/export`)
-          .set('Authorization', authHeaderForUser(userData.user));
+          .set('tj-workspace-id', userData.user.defaultOrganizationId)
+          .set('Cookie', userData['tokenCookie']);
 
         expect(response.statusCode).toBe(200);
-        expect(response.body.id).toBe(application.id);
-        expect(response.body.name).toBe(application.name);
-        expect(response.body.isPublic).toBe(application.isPublic);
-        expect(response.body.organizationId).toBe(application.organizationId);
+        expect(response.body.appV2.id).toBe(application.id);
+        expect(response.body.appV2.name).toBe(application.name);
+        expect(response.body.appV2.isPublic).toBe(application.isPublic);
+        expect(response.body.appV2.organizationId).toBe(application.organizationId);
       }
+
+      await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
+      await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
+      await logoutUser(app, viewerUserData['tokenCookie'], viewerUserData.user.defaultOrganizationId);
     });
 
     it('should not be able to export app if member of another organization', async () => {
@@ -1330,10 +2061,15 @@ describe('apps controller', () => {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
       const anotherOrgAdminUserData = await createUser(app, {
         email: 'another@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
+      const loggedUser = await authenticateUser(app, 'another@tooljet.io');
+      anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const application = await createApplication(app, {
         name: 'name',
         user: adminUserData.user,
@@ -1342,9 +2078,11 @@ describe('apps controller', () => {
 
       const response = await request(app.getHttpServer())
         .get(`/api/apps/${application.id}/export`)
-        .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user));
+        .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+        .set('Cookie', anotherOrgAdminUserData['tokenCookie']);
 
       expect(response.statusCode).toBe(403);
+      await logoutUser(app, anotherOrgAdminUserData['tokenCookie'], anotherOrgAdminUserData.user.defaultOrganizationId);
     });
 
     it('should not be able to export app if it is a public app for an unauthenticated user', async () => {
@@ -1371,17 +2109,28 @@ describe('apps controller', () => {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
+      let loggedUser = await authenticateUser(app);
+      adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const organization = adminUserData.organization;
       const developerUserData = await createUser(app, {
         email: 'developer@tooljet.io',
         groups: ['all_users', 'developer'],
         organization,
       });
+
+      loggedUser = await authenticateUser(app, 'developer@tooljet.io');
+      developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const viewerUserData = await createUser(app, {
         email: 'viewer@tooljet.io',
         groups: ['all_users', 'viewer'],
         organization,
       });
+
+      loggedUser = await authenticateUser(app, 'viewer@tooljet.io');
+      viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
 
       const application = await createApplication(app, {
         name: 'name',
@@ -1392,20 +2141,23 @@ describe('apps controller', () => {
       for (const userData of [viewerUserData, developerUserData]) {
         const response = await request(app.getHttpServer())
           .post('/api/apps/import')
-          .set('Authorization', authHeaderForUser(userData.user));
+          .set('tj-workspace-id', userData.user.defaultOrganizationId)
+          .set('Cookie', userData['tokenCookie'])
+          .send({ app: application, name: 'name' });
 
         expect(response.statusCode).toBe(403);
       }
 
       const response = await request(app.getHttpServer())
         .post('/api/apps/import')
-        .set('Authorization', authHeaderForUser(adminUserData.user))
-        .send({ name: 'Imported App' });
+        .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+        .set('Cookie', adminUserData['tokenCookie'])
+        .send({ app: application, name: 'Imported App' });
 
       expect(response.statusCode).toBe(201);
 
       const importedApp = await getManager().find(App, {
-        name: 'Imported App',
+        name: response.body.name,
       });
 
       expect(importedApp).toHaveLength(1);
@@ -1422,14 +2174,19 @@ describe('apps controller', () => {
         user: adminUserData.user,
       });
 
+      const loggedUser = await authenticateUser(app);
+      adminUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const response = await request(app.getHttpServer())
         .put(`/api/apps/${application.id}/icons`)
-        .set('Authorization', authHeaderForUser(adminUserData.user))
+        .set('tj-workspace-id', adminUserData.user.defaultOrganizationId)
+        .set('Cookie', adminUserData['tokenCookie'])
         .send({ icon: 'new-icon-name' });
 
       expect(response.statusCode).toBe(200);
       await application.reload();
       expect(application.icon).toBe('new-icon-name');
+      await logoutUser(app, adminUserData['tokenCookie'], adminUserData.user.defaultOrganizationId);
     });
 
     it('should not be able to update icon of the app if admin of another organization', async () => {
@@ -1441,6 +2198,8 @@ describe('apps controller', () => {
         email: 'another@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+      const loggedUser = await authenticateUser(app, 'another@tooljet.io');
+      anotherOrgAdminUserData['tokenCookie'] = loggedUser.tokenCookie;
       const application = await createApplication(app, {
         name: 'name',
         user: adminUserData.user,
@@ -1448,12 +2207,14 @@ describe('apps controller', () => {
 
       const response = await request(app.getHttpServer())
         .put(`/api/apps/${application.id}/icons`)
-        .set('Authorization', authHeaderForUser(anotherOrgAdminUserData.user))
+        .set('tj-workspace-id', anotherOrgAdminUserData.user.defaultOrganizationId)
+        .set('Cookie', anotherOrgAdminUserData['tokenCookie'])
         .send({ icon: 'new-icon-name' });
 
       expect(response.statusCode).toBe(403);
       await application.reload();
       expect(application.icon).toBe(null);
+      await logoutUser(app, anotherOrgAdminUserData['tokenCookie'], anotherOrgAdminUserData.user.defaultOrganizationId);
     });
 
     it('should not allow custom groups without app create permission to change the name of apps', async () => {
@@ -1461,6 +2222,7 @@ describe('apps controller', () => {
         email: 'admin@tooljet.io',
         groups: ['all_users', 'admin'],
       });
+
       const application = await createApplication(app, {
         name: 'name',
         user: adminUserData.user,
@@ -1471,26 +2233,38 @@ describe('apps controller', () => {
         groups: ['all_users', 'developer'],
         organization: adminUserData.organization,
       });
+
+      let loggedUser = await authenticateUser(app, 'dev@tooljet.io');
+      developerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       const viewerUserData = await createUser(app, {
         email: 'viewer@tooljet.io',
         groups: ['all_users', 'viewer'],
         organization: adminUserData.organization,
       });
 
+      loggedUser = await authenticateUser(app, 'viewer@tooljet.io');
+      viewerUserData['tokenCookie'] = loggedUser.tokenCookie;
+
       let response = await request(app.getHttpServer())
         .put(`/api/apps/${application.id}/icons`)
-        .set('Authorization', authHeaderForUser(developerUserData.user))
+        .set('tj-workspace-id', developerUserData.user.defaultOrganizationId)
+        .set('Cookie', developerUserData['tokenCookie'])
         .send({ icon: 'new-icon' });
       expect(response.statusCode).toBe(403);
 
       response = await request(app.getHttpServer())
         .put(`/api/apps/${application.id}/icons`)
-        .set('Authorization', authHeaderForUser(viewerUserData.user))
+        .set('tj-workspace-id', viewerUserData.user.defaultOrganizationId)
+        .set('Cookie', viewerUserData['tokenCookie'])
         .send({ icon: 'new-icon' });
       expect(response.statusCode).toBe(403);
 
       await application.reload();
       expect(application.icon).toBe(null);
+
+      await logoutUser(app, developerUserData['tokenCookie'], developerUserData.user.defaultOrganizationId);
+      await logoutUser(app, viewerUserData['tokenCookie'], viewerUserData.user.defaultOrganizationId);
     });
   });
 

@@ -2,16 +2,20 @@ import React from 'react';
 import { useSpring, animated } from 'react-spring';
 import OverlayTrigger from 'react-bootstrap/OverlayTrigger';
 import Tooltip from 'react-bootstrap/Tooltip';
+import { useTranslation } from 'react-i18next';
+import classnames from 'classnames';
 
 export const DarkModeToggle = function DarkModeToggle({
   darkMode = false,
   switchDarkMode,
   tooltipPlacement = 'bottom',
+  showText = false,
 }) {
   const toggleDarkMode = () => {
     switchDarkMode(!darkMode);
   };
 
+  const { t } = useTranslation();
   const properties = {
     sun: {
       r: 9,
@@ -49,48 +53,58 @@ export const DarkModeToggle = function DarkModeToggle({
     <OverlayTrigger
       placement={tooltipPlacement}
       delay={{ show: 250, hide: 400 }}
-      overlay={<Tooltip id="button-tooltip">{darkMode ? 'Activate light mode' : 'Activate dark mode'}</Tooltip>}
+      trigger={('hover', 'focus')}
+      overlay={
+        <Tooltip id="button-tooltip">
+          {darkMode
+            ? t('header.darkModeToggle.activateLightMode', 'Activate light mode')
+            : t('header.darkModeToggle.activateDarkMode', 'Activate dark mode')}
+        </Tooltip>
+      }
     >
-      <animated.svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="24"
-        viewBox="0 0 24 24"
-        fill="none"
-        color={darkMode ? '#fff' : '#808080'}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        stroke="currentColor"
+      <div
+        className={classnames('unstyled-button dark-theme-toggle-btn  sidebar-svg-icon  left-sidebar-item')}
         onClick={toggleDarkMode}
-        style={{
-          cursor: 'pointer',
-          ...svgContainerProps,
-        }}
       >
-        <mask id="myMask2">
-          <rect x="0" y="0" width="100%" height="100%" fill="white" />
-          <animated.circle style={maskedCircleProps} r="9" fill="black" />
-        </mask>
+        <animated.svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          color={'var(--slate8)'}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          stroke="currentColor"
+          style={{
+            cursor: 'pointer',
+            ...svgContainerProps,
+            transform: 'rotate(315deg)',
+          }}
+        >
+          <mask id="myMask2">
+            <rect x="0" y="0" width="100%" height="100%" fill="white" />
+            <animated.circle style={maskedCircleProps} r="9" fill="black" />
+          </mask>
 
-        <animated.circle
-          cx="12"
-          cy="12"
-          style={centerCircleProps}
-          fill={darkMode ? 'white' : '#808080'}
-          mask="url(#myMask2)"
-        />
-        <animated.g stroke="currentColor" style={linesProps}>
-          <line x1="12" y1="1" x2="12" y2="3" />
-          <line x1="12" y1="21" x2="12" y2="23" />
-          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-          <line x1="1" y1="12" x2="3" y2="12" />
-          <line x1="21" y1="12" x2="23" y2="12" />
-          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-        </animated.g>
-      </animated.svg>
+          <animated.circle cx="12" cy="12" style={centerCircleProps} fill={'var(--slate8)'} mask="url(#myMask2)" />
+          <animated.g stroke="currentColor" style={linesProps}>
+            <line x1="12" y1="1" x2="12" y2="3" />
+            <line x1="12" y1="21" x2="12" y2="23" />
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+            <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+            <line x1="1" y1="12" x2="3" y2="12" />
+            <line x1="21" y1="12" x2="23" y2="12" />
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+            <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+          </animated.g>
+        </animated.svg>
+
+        {showText && (
+          <span className="dark-theme-toggle-btn-text">Switch to {!darkMode ? 'dark mode' : 'light mode'}</span>
+        )}
+      </div>
     </OverlayTrigger>
   );
 };

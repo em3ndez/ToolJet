@@ -10,15 +10,36 @@ import { EncryptionService } from '@services/encryption.service';
 import { Credential } from 'src/entities/credential.entity';
 import { DataSource } from 'src/entities/data_source.entity';
 import { CaslModule } from '../casl/casl.module';
+import { FilesService } from '@services/files.service';
+import { File } from 'src/entities/file.entity';
+import { PluginsService } from '@services/plugins.service';
+import { Plugin } from 'src/entities/plugin.entity';
+import { PluginsHelper } from 'src/helpers/plugins.helper';
+import { AppEnvironmentService } from '@services/app_environments.service';
+import { ImportExportResourcesModule } from '../import_export_resources/import_export_resources.module';
+import { AppsService } from '@services/apps.service';
+import { AppVersion } from 'src/entities/app_version.entity';
+import { AppUser } from 'src/entities/app_user.entity';
+import { TooljetDbModule } from '../tooljet_db/tooljet_db.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([App, Credential, DataSource]), CaslModule],
+  imports: [
+    TypeOrmModule.forFeature([App, Credential, File, Plugin, DataSource, AppVersion, AppUser]),
+    CaslModule,
+    ImportExportResourcesModule,
+    TooljetDbModule,
+  ],
   providers: [
     EncryptionService,
     CredentialsService,
     DataSourcesService,
     LibraryAppCreationService,
     AppImportExportService,
+    FilesService,
+    PluginsService,
+    PluginsHelper,
+    AppEnvironmentService,
+    AppsService,
   ],
   controllers: [LibraryAppsController],
 })
